@@ -1,0 +1,13 @@
+services:
+  sync-mcp:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/app/data
+    environment:
+      SYNC_MCP_PROJECT: "my-project"
+      SYNC_MCP_STORAGE: "sqlite"
+      # SYNC_MCP_TOKEN: "shared-secret"
