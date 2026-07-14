@@ -6,11 +6,13 @@ import httpx
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
+from sync_mcp.auth import rbac
 from sync_mcp.config import Settings
 from sync_mcp.models import (
     ApiEndpoint,
     ChangeCreate,
     ComponentSpec,
+    ProjectRole,
     ProjectUpdate,
     PublishResult,
     Requirement,
@@ -21,7 +23,7 @@ from sync_mcp.models import (
 from sync_mcp.notifier import ChangeNotifier
 from sync_mcp.onboarding import onboard_checklist, onboard_instructions
 from sync_mcp.openapi_diff import endpoints_and_fingerprint
-from sync_mcp.project_context import get_project_context
+from sync_mcp.project_context import get_principal_context, get_project_context
 from sync_mcp.state import format_state_markdown
 from sync_mcp.storage.base import StateStore
 from sync_mcp.storage.sqlite_store import ProjectNotFoundError
@@ -41,6 +43,24 @@ def create_mcp_server(store: StateStore, notifier: ChangeNotifier, settings: Set
     def _project_error(exc: ProjectNotFoundError) -> dict[str, str]:
         return {"error": "project_not_found", "project_id": str(exc)}
 
+    def _forbidden(detail: str = "Insufficient permission") -> dict[str, str]:
+        return {"error": "forbidden", "detail": detail}
+
+    def require_principal():
+        principal = get_principal_context()
+        if principal is None:
+            raise PermissionError("Authentication required")
+        return principal
+
+    async def require_project_role(project_id: str, minimum: ProjectRole):
+        principal = require_principal()
+        if principal.is_admin:
+            return principal
+        role = await store.get_project_role(project_id, principal.user_id)
+        if not rbac.role_at_least(role, minimum):
+            raise PermissionError("Insufficient project permission")
+        return principal
+
     def resolve_project_id(explicit: str | None = None) -> str:
         ctx = get_project_context()
         if ctx is not None:
@@ -58,22 +78,37 @@ def create_mcp_server(store: StateStore, notifier: ChangeNotifier, settings: Set
         raise ValueError("team is required when Project header is not set")
 
     @mcp.tool()
-    async def list_projects() -> list[dict[str, Any]]:
-        """List all projects in this Team Sync hub."""
-        projects = await store.list_projects()
+    async def list_projects() -> list[dict[str, Any]] | dict[str, str]:
+        """List projects visible to the authenticated user."""
+        try:
+            principal = require_principal()
+        except PermissionError as exc:
+            return _forbidden(str(exc))
+        projects = await store.list_projects_for_user(principal.user_id, is_admin=principal.is_admin)
         return [project.model_dump(mode="json") for project in projects]
 
     @mcp.tool()
     async def register_project(name: str, description: str = "") -> dict[str, Any]:
         """Create a project (or return the existing one with the same slug)."""
-        existing = await store.list_projects()
+        try:
+            principal = require_principal()
+            if not rbac.can_create_project(principal):
+                return _forbidden("Cannot create projects")
+        except PermissionError as exc:
+            return _forbidden(str(exc))
+        existing = await store.list_projects_for_user(principal.user_id, is_admin=True)
         from sync_mcp.state import slugify
 
         slug = slugify(name)
         for project in existing:
             if project.id == slug or project.name.lower() == name.lower():
                 return {"created": False, "project": project.model_dump(mode="json")}
-        project = await store.create_project(name, description)
+        # Also check global uniqueness
+        all_projects = await store.list_projects()
+        for project in all_projects:
+            if project.id == slug or project.name.lower() == name.lower():
+                return {"created": False, "project": project.model_dump(mode="json")}
+        project = await store.create_project(name, description, owner_user_id=principal.user_id)
         return {"created": True, "project": project.model_dump(mode="json")}
 
     @mcp.tool()
@@ -81,6 +116,7 @@ def create_mcp_server(store: StateStore, notifier: ChangeNotifier, settings: Set
         """Start Cursor-driven onboarding for a team subproject; returns scan checklist."""
         try:
             resolved_id = resolve_project_id(project_id)
+            await require_project_role(resolved_id, ProjectRole.viewer)
             team_enum = resolve_team(team)
             project = await store.get_project(resolved_id)
             if project is None:
@@ -101,6 +137,8 @@ def create_mcp_server(store: StateStore, notifier: ChangeNotifier, settings: Set
                     else None
                 ),
             }
+        except PermissionError as exc:
+            return _forbidden(str(exc))
         except ProjectNotFoundError as exc:
             return _project_error(exc)
         except ValueError as exc:
@@ -119,6 +157,7 @@ def create_mcp_server(store: StateStore, notifier: ChangeNotifier, settings: Set
         """Bulk-publish discovered APIs/components/requirements after codebase review."""
         try:
             resolved_id = resolve_project_id(project_id)
+            await require_project_role(resolved_id, ProjectRole.editor)
             team_enum = resolve_team(team)
             snapshot = SnapshotImport(
                 team=team_enum,
@@ -140,6 +179,8 @@ def create_mcp_server(store: StateStore, notifier: ChangeNotifier, settings: Set
             ).model_dump(mode="json")
         except ProjectNotFoundError as exc:
             return _project_error(exc)
+        except PermissionError as exc:
+            return _forbidden(str(exc))
         except ValueError as exc:
             return {"error": "invalid_arguments", "detail": str(exc)}
 
@@ -155,6 +196,7 @@ def create_mcp_server(store: StateStore, notifier: ChangeNotifier, settings: Set
         """Import FastAPI/OpenAPI routes into a project from a URL or pasted OpenAPI JSON."""
         try:
             resolved_id = resolve_project_id(project_id)
+            await require_project_role(resolved_id, ProjectRole.editor)
             team_enum = resolve_team(team) if team is not None or get_project_context() else Team.backend
             if openapi_json is None:
                 if not openapi_url:
@@ -197,6 +239,8 @@ def create_mcp_server(store: StateStore, notifier: ChangeNotifier, settings: Set
             }
         except ProjectNotFoundError as exc:
             return _project_error(exc)
+        except PermissionError as exc:
+            return _forbidden(str(exc))
         except ValueError as exc:
             return {"error": "invalid_arguments", "detail": str(exc)}
         except Exception as exc:  # noqa: BLE001 - surface fetch/parse errors to Cursor
@@ -214,6 +258,7 @@ def create_mcp_server(store: StateStore, notifier: ChangeNotifier, settings: Set
         """Publish a frontend/backend change into a project shared state."""
         try:
             resolved_id = resolve_project_id(project_id)
+            await require_project_role(resolved_id, ProjectRole.editor)
             team_enum = resolve_team(team)
             saved, next_state = await store.publish(
                 resolved_id,
@@ -235,6 +280,8 @@ def create_mcp_server(store: StateStore, notifier: ChangeNotifier, settings: Set
             ).model_dump(mode="json")
         except ProjectNotFoundError as exc:
             return _project_error(exc)
+        except PermissionError as exc:
+            return _forbidden(str(exc))
         except ValueError as exc:
             return {"error": "invalid_arguments", "detail": str(exc)}
 
@@ -243,10 +290,13 @@ def create_mcp_server(store: StateStore, notifier: ChangeNotifier, settings: Set
         """Return the full aggregated state plus a Cursor-friendly digest."""
         try:
             resolved_id = resolve_project_id(project_id)
+            await require_project_role(resolved_id, ProjectRole.viewer)
             state = await store.get_state(resolved_id)
             payload = state.model_dump(mode="json")
             payload["digest_markdown"] = format_state_markdown(state)
             return payload
+        except PermissionError as exc:
+            return _forbidden(str(exc))
         except ProjectNotFoundError as exc:
             return _project_error(exc)
 
@@ -261,6 +311,7 @@ def create_mcp_server(store: StateStore, notifier: ChangeNotifier, settings: Set
         """Return changes since an ISO timestamp or version for a project."""
         try:
             resolved_id = resolve_project_id(project_id)
+            await require_project_role(resolved_id, ProjectRole.viewer)
             resolved_team = team
             if resolved_team is None:
                 ctx = get_project_context()
@@ -274,6 +325,8 @@ def create_mcp_server(store: StateStore, notifier: ChangeNotifier, settings: Set
                 limit=limit,
             )
             return [change.model_dump(mode="json") for change in changes]
+        except PermissionError as exc:
+            return _forbidden(str(exc))
         except ProjectNotFoundError as exc:
             return _project_error(exc)
 
@@ -282,6 +335,9 @@ def create_mcp_server(store: StateStore, notifier: ChangeNotifier, settings: Set
         """Describe subscription resources clients can watch for near-real-time updates."""
         try:
             resolved_id = resolve_project_id(project_id)
+            await require_project_role(resolved_id, ProjectRole.viewer)
+        except PermissionError as exc:
+            return _forbidden(str(exc))
         except ProjectNotFoundError as exc:
             return _project_error(exc)
         return {

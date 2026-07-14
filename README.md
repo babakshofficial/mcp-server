@@ -11,6 +11,7 @@ A self-hosted synchronization hub for frontend and backend teams using Cursor. I
 - REST endpoints at `/api/projects...` plus live SSE at `/api/events`.
 - A React, Tailwind CSS, and shadcn-style dashboard at `http://localhost:8080/dashboard/`.
 - Optional shared bearer token for MCP calls and write endpoints.
+- Local username/password login, API keys for Cursor/CI, and project RBAC (owner/editor/viewer).
 
 ## Quick Start With Docker
 
@@ -59,13 +60,34 @@ python -m sync_mcp
 | `SYNC_MCP_DATA_DIR` | `./data` | Directory for persistent state. |
 | `SYNC_MCP_HOST` | `0.0.0.0` | Server bind host. |
 | `SYNC_MCP_PORT` | `8080` | Server port. |
-| `SYNC_MCP_TOKEN` | empty | Optional shared bearer token for MCP and write access. |
+| `SYNC_MCP_SECRET` | empty | JWT signing secret (auto-generated for the process if empty; set in production). |
+| `SYNC_MCP_ADMIN_USERNAME` | empty | Bootstrap admin username when no users exist. |
+| `SYNC_MCP_ADMIN_PASSWORD` | empty | Bootstrap admin password when no users exist. |
+| `SYNC_MCP_TOKEN` | empty | Deprecated; migrated once into an admin API key if present and no keys exist. |
 
 Existing single-project databases are auto-migrated into one project (slug derived from `SYNC_MCP_PROJECT`) on startup.
 
+## Authentication and RBAC
+
+1. Set `SYNC_MCP_ADMIN_USERNAME` / `SYNC_MCP_ADMIN_PASSWORD` and start the hub — the first admin is created if the DB has no users.
+2. Open the dashboard and **sign in**.
+3. Under **API keys**, create a key (copy it once). Admins can manage users under **Admin**.
+4. Project roles: **owner** (edit/delete/members), **editor** (sync/publish), **viewer** (read). Hub **admin** can manage all projects and users.
+
+| Action | Hub admin | Owner | Editor | Viewer |
+| --- | --- | --- | --- | --- |
+| Read project | all | yes | yes | yes |
+| Create project | yes | yes* | no | no |
+| Edit / delete project | yes | yes | no | no |
+| Sync / publish | yes | yes | yes | no |
+| Manage members | yes | yes | no | no |
+| Hub settings / users | yes | no | no | no |
+
+\*Any signed-in hub member can create a project and becomes its owner.
+
 ## Cursor MCP Configuration
 
-Connect with **Authorization** (when `SYNC_MCP_TOKEN` is set) and a **Project** header of the form `<project_name>-<project_type>`:
+Use an **API key** (not the dashboard JWT) plus a **Project** header:
 
 ```json
 {
@@ -73,7 +95,7 @@ Connect with **Authorization** (when `SYNC_MCP_TOKEN` is set) and a **Project** 
     "team-sync": {
       "url": "http://localhost:8080/mcp",
       "headers": {
-        "Authorization": "Bearer YOUR_TOKEN",
+        "Authorization": "Bearer sk_YOUR_API_KEY",
         "Project": "adra-backend"
       }
     }
@@ -81,9 +103,7 @@ Connect with **Authorization** (when `SYNC_MCP_TOKEN` is set) and a **Project** 
 }
 ```
 
-`Project: adra-backend` scopes tools to project `adra` and team `backend` (type is the last `-` segment: `backend` | `frontend` | `other`).
-
-When `SYNC_MCP_TOKEN` is set, both Bearer and `Project` are required on `/mcp`. In open/dev mode (empty token), `Project` is optional — without it, tools still need an explicit `project_id` argument.
+`Project: adra-backend` scopes tools to project `adra` and team `backend` (last `-` segment: `backend` | `frontend` | `other`). Bearer + Project are required on `/mcp`. The API key’s user must be a member of that project (or hub admin).
 
 If you previously saw `POST ... Not Found` / SSE `404`, restart Team Sync — an older bug mounted FastMCP at `/mcp/mcp`. The endpoint is now `/mcp`.
 
@@ -158,10 +178,11 @@ Resources: `sync://projects`, `sync://projects/{id}/state`, `sync://projects/{id
 
 ## Dashboard
 
-- Overview lists every project with API/requirement counts and FE/BE onboard status.
-- Open a project (`?project=<id>`) for detailed state + activity feed.
-- Create projects from the UI (optional bearer token field stored in `localStorage`).
-- Live updates via SSE.
+- Sign in with username/password; JWT is stored in `localStorage`.
+- Overview lists projects you can access; create projects (you become owner).
+- Open a project for state + activity; owners can edit/delete/sync and manage members.
+- **API keys** page for Cursor/CI; **Admin** (hub admins) manages users.
+- Live updates via SSE (`/api/events?access_token=...`).
 
 ## REST examples
 

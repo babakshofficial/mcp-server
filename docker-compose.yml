@@ -10,4 +10,7 @@ services:
     environment:
       SYNC_MCP_PROJECT: "my-project"
       SYNC_MCP_STORAGE: "sqlite"
-      # SYNC_MCP_TOKEN: "shared-secret"
+      SYNC_MCP_SECRET: "change-me-in-production"
+      SYNC_MCP_ADMIN_USERNAME: "admin"
+      SYNC_MCP_ADMIN_PASSWORD: "changeme"
+      # SYNC_MCP_TOKEN: "legacy-migrated-once"

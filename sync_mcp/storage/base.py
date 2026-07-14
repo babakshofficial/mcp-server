@@ -3,11 +3,17 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 
 from sync_mcp.models import (
+    ApiKeyCreated,
+    ApiKeyRecord,
+    AuthPrincipal,
     Change,
     ChangeCreate,
+    HubRole,
     HubSettings,
     HubSettingsUpdate,
     Project,
+    ProjectMember,
+    ProjectRole,
     ProjectSummary,
     ProjectState,
     ProjectUpdate,
@@ -15,6 +21,8 @@ from sync_mcp.models import (
     SubprojectRecord,
     SubprojectStatus,
     Team,
+    User,
+    UserPublic,
 )
 
 
@@ -25,6 +33,10 @@ class StateStore(ABC):
 
     @abstractmethod
     async def list_projects(self) -> list[ProjectSummary]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_projects_for_user(self, user_id: str, *, is_admin: bool) -> list[ProjectSummary]:
         raise NotImplementedError
 
     @abstractmethod
@@ -41,11 +53,16 @@ class StateStore(ABC):
         auto_sync: bool = True,
         sync_mode: str = "interval",
         git_repo_path: str = "",
+        owner_user_id: str | None = None,
     ) -> Project:
         raise NotImplementedError
 
     @abstractmethod
     async def update_project(self, project_id: str, update: ProjectUpdate) -> Project:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def delete_project(self, project_id: str) -> None:
         raise NotImplementedError
 
     @abstractmethod
@@ -116,4 +133,101 @@ class StateStore(ABC):
 
     @abstractmethod
     async def get_subprojects(self, project_id: str) -> list[SubprojectRecord]:
+        raise NotImplementedError
+
+    # --- Auth / RBAC ---
+
+    @abstractmethod
+    async def count_users(self) -> int:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def create_user(
+        self,
+        username: str,
+        password_hash: str,
+        *,
+        hub_role: HubRole = HubRole.member,
+    ) -> User:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_user(self, user_id: str) -> User | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_user_by_username(self, username: str) -> User | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_user_password_hash(self, user_id: str) -> str | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_users(self) -> list[UserPublic]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def update_user(
+        self,
+        user_id: str,
+        *,
+        hub_role: HubRole | None = None,
+        disabled: bool | None = None,
+        password_hash: str | None = None,
+    ) -> User:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_project_members(self, project_id: str) -> list[ProjectMember]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def set_project_member(
+        self,
+        project_id: str,
+        user_id: str,
+        role: ProjectRole,
+    ) -> ProjectMember:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def remove_project_member(self, project_id: str, user_id: str) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_project_role(self, project_id: str, user_id: str) -> ProjectRole | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def create_api_key(
+        self,
+        user_id: str,
+        name: str,
+        prefix: str,
+        key_hash: str,
+        *,
+        key_id: str | None = None,
+    ) -> ApiKeyRecord:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_api_keys(self, user_id: str | None = None) -> list[ApiKeyRecord]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def revoke_api_key(self, key_id: str) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def find_api_key_by_prefix(self, prefix: str) -> tuple[ApiKeyRecord, str] | None:
+        """Return key record and key_hash for active (non-revoked) keys matching prefix."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def touch_api_key(self, key_id: str) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def count_api_keys(self) -> int:
         raise NotImplementedError

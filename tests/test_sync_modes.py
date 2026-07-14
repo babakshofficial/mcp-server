@@ -6,13 +6,12 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 
-from sync_mcp.app import create_app
 from sync_mcp.autosync import AutoSyncService
-from sync_mcp.config import Settings
 from sync_mcp.models import Team
 from sync_mcp.notifier import ChangeNotifier
 from sync_mcp.project_context import parse_project_header
 from sync_mcp.storage.sqlite_store import SQLiteStateStore
+from tests.conftest import login_headers, make_app
 
 
 def test_parse_project_header_name_and_type():
@@ -86,13 +85,12 @@ async def test_on_commit_triggers_sync_when_sha_changes(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_commit_webhook_calls_sync(tmp_path: Path):
-    settings = Settings(project="hub", token="secret", data_dir=tmp_path, dashboard_dist=tmp_path / "dist")
-    app = create_app(settings)
+    app = make_app(tmp_path)
 
     async with app.router.lifespan_context(app):
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-            headers = {"Authorization": "Bearer secret"}
+            headers = await login_headers(client)
             await client.put(
                 "/api/settings",
                 headers=headers,
@@ -130,21 +128,23 @@ async def test_commit_webhook_calls_sync(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_mcp_requires_project_header_when_token_set(tmp_path: Path):
-    settings = Settings(project="hub", token="secret", data_dir=tmp_path, dashboard_dist=tmp_path / "dist")
-    app = create_app(settings)
+async def test_mcp_requires_auth_and_project_header(tmp_path: Path):
+    app = make_app(tmp_path)
 
     async with app.router.lifespan_context(app):
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-            await client.post(
-                "/api/projects",
-                headers={"Authorization": "Bearer secret"},
-                json={"name": "adra"},
-            )
+            headers = await login_headers(client)
+            key_resp = await client.post("/api/api-keys", headers=headers, json={"name": "mcp"})
+            raw_key = key_resp.json()["raw_key"]
+            await client.post("/api/projects", headers=headers, json={"name": "adra"})
+
+            unauth = await client.post("/mcp", headers={"Content-Type": "application/json"}, json={})
+            assert unauth.status_code == 401
+
             missing_project = await client.post(
                 "/mcp",
-                headers={"Authorization": "Bearer secret", "Content-Type": "application/json"},
+                headers={"Authorization": f"Bearer {raw_key}", "Content-Type": "application/json"},
                 json={},
             )
             assert missing_project.status_code == 400
@@ -153,7 +153,7 @@ async def test_mcp_requires_project_header_when_token_set(tmp_path: Path):
             unknown = await client.post(
                 "/mcp",
                 headers={
-                    "Authorization": "Bearer secret",
+                    "Authorization": f"Bearer {raw_key}",
                     "Project": "missing-backend",
                     "Content-Type": "application/json",
                 },

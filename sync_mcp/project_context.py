@@ -3,10 +3,14 @@ from __future__ import annotations
 import contextvars
 from dataclasses import dataclass
 
-from sync_mcp.models import Team
+from sync_mcp.models import AuthPrincipal, Team
 
 _project_context: contextvars.ContextVar[ProjectHeaderContext | None] = contextvars.ContextVar(
     "sync_mcp_project_context",
+    default=None,
+)
+_principal_context: contextvars.ContextVar[AuthPrincipal | None] = contextvars.ContextVar(
+    "sync_mcp_principal_context",
     default=None,
 )
 
@@ -28,6 +32,18 @@ def reset_project_context(token: contextvars.Token) -> None:
 
 def get_project_context() -> ProjectHeaderContext | None:
     return _project_context.get()
+
+
+def set_principal_context(principal: AuthPrincipal | None) -> contextvars.Token:
+    return _principal_context.set(principal)
+
+
+def reset_principal_context(token: contextvars.Token) -> None:
+    _principal_context.reset(token)
+
+
+def get_principal_context() -> AuthPrincipal | None:
+    return _principal_context.get()
 
 
 def parse_project_header(value: str) -> tuple[str, Team]:

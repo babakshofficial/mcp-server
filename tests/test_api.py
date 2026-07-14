@@ -4,25 +4,26 @@ import aiosqlite
 import httpx
 import pytest
 
-from sync_mcp.app import create_app
 from sync_mcp.config import Settings
 from sync_mcp.models import ApiEndpoint, ChangeCreate, ChangeType, SnapshotImport, Team
 from sync_mcp.storage.sqlite_store import SQLiteStateStore
+from tests.conftest import login_headers, make_app
 
 
 @pytest.mark.asyncio
 async def test_multi_project_isolation_and_snapshot(tmp_path: Path):
-    settings = Settings(project="hub", data_dir=tmp_path, dashboard_dist=tmp_path / "dist")
-    app = create_app(settings)
+    app = make_app(tmp_path)
 
     async with app.router.lifespan_context(app):
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-            alpha = (await client.post("/api/projects", json={"name": "Alpha App", "description": "A"})).json()
-            beta = (await client.post("/api/projects", json={"name": "Beta App"})).json()
+            headers = await login_headers(client)
+            alpha = (await client.post("/api/projects", headers=headers, json={"name": "Alpha App", "description": "A"})).json()
+            beta = (await client.post("/api/projects", headers=headers, json={"name": "Beta App"})).json()
 
             snap = await client.post(
                 f"/api/projects/{alpha['id']}/snapshot",
+                headers=headers,
                 json={
                     "team": "backend",
                     "api": [{"method": "GET", "path": "/users", "description": "List users"}],
@@ -37,6 +38,7 @@ async def test_multi_project_isolation_and_snapshot(tmp_path: Path):
 
             await client.post(
                 f"/api/projects/{beta['id']}/updates",
+                headers=headers,
                 json={
                     "team": "frontend",
                     "type": "component_spec",
@@ -45,24 +47,23 @@ async def test_multi_project_isolation_and_snapshot(tmp_path: Path):
                 },
             )
 
-            alpha_state = (await client.get(f"/api/projects/{alpha['id']}/state")).json()
-            beta_state = (await client.get(f"/api/projects/{beta['id']}/state")).json()
+            alpha_state = (await client.get(f"/api/projects/{alpha['id']}/state", headers=headers)).json()
+            beta_state = (await client.get(f"/api/projects/{beta['id']}/state", headers=headers)).json()
             assert alpha_state["api"][0]["path"] == "/users"
             assert alpha_state["components"] == []
             assert beta_state["components"][0]["name"] == "CheckoutForm"
             assert beta_state["api"] == []
 
-            listing = (await client.get("/api/projects")).json()
+            listing = (await client.get("/api/projects", headers=headers)).json()
             assert {item["id"] for item in listing} == {alpha["id"], beta["id"]}
 
-            missing = await client.get("/api/state")
+            missing = await client.get("/api/state", headers=headers)
             assert missing.status_code == 400
 
 
 @pytest.mark.asyncio
-async def test_write_endpoints_respect_optional_token(tmp_path: Path):
-    settings = Settings(project="hub", token="secret", data_dir=tmp_path, dashboard_dist=tmp_path / "dist")
-    app = create_app(settings)
+async def test_writes_require_authentication(tmp_path: Path):
+    app = make_app(tmp_path)
 
     async with app.router.lifespan_context(app):
         transport = httpx.ASGITransport(app=app)
@@ -70,11 +71,8 @@ async def test_write_endpoints_respect_optional_token(tmp_path: Path):
             blocked = await client.post("/api/projects", json={"name": "Secure"})
             assert blocked.status_code == 401
 
-            created = await client.post(
-                "/api/projects",
-                headers={"Authorization": "Bearer secret"},
-                json={"name": "Secure"},
-            )
+            headers = await login_headers(client)
+            created = await client.post("/api/projects", headers=headers, json={"name": "Secure"})
             assert created.status_code == 200
             project_id = created.json()["id"]
 
@@ -86,7 +84,7 @@ async def test_write_endpoints_respect_optional_token(tmp_path: Path):
 
             allowed = await client.post(
                 f"/api/projects/{project_id}/updates",
-                headers={"Authorization": "Bearer secret"},
+                headers=headers,
                 json={"team": "frontend", "type": "requirement_added", "description": "Need avatar_url"},
             )
             assert allowed.status_code == 200
@@ -165,14 +163,15 @@ async def test_store_import_snapshot_marks_subproject(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_openapi_rest_import(tmp_path: Path):
-    settings = Settings(project="hub", data_dir=tmp_path, dashboard_dist=tmp_path / "dist")
-    app = create_app(settings)
+    app = make_app(tmp_path)
     async with app.router.lifespan_context(app):
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-            project = (await client.post("/api/projects", json={"name": "API App"})).json()
+            headers = await login_headers(client)
+            project = (await client.post("/api/projects", headers=headers, json={"name": "API App"})).json()
             response = await client.post(
                 f"/api/projects/{project['id']}/openapi",
+                headers=headers,
                 json={
                     "openapi": {
                         "paths": {
@@ -189,22 +188,27 @@ async def test_openapi_rest_import(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_hub_settings_and_project_openapi_config(tmp_path: Path):
-    settings = Settings(project="hub", data_dir=tmp_path, dashboard_dist=tmp_path / "dist")
-    app = create_app(settings)
+    app = make_app(tmp_path)
     async with app.router.lifespan_context(app):
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-            hub = (await client.get("/api/settings")).json()
+            headers = await login_headers(client)
+            hub = (await client.get("/api/settings", headers=headers)).json()
             assert hub["poll_interval_seconds"] == 30
             assert hub["auto_sync_enabled"] is True
 
-            updated = await client.put("/api/settings", json={"poll_interval_seconds": 15, "auto_sync_enabled": True})
+            updated = await client.put(
+                "/api/settings",
+                headers=headers,
+                json={"poll_interval_seconds": 15, "auto_sync_enabled": True},
+            )
             assert updated.status_code == 200
             assert updated.json()["poll_interval_seconds"] == 15
 
             project = (
                 await client.post(
                     "/api/projects",
+                    headers=headers,
                     json={
                         "name": "Polled",
                         "openapi_url": "http://example.com/openapi.json",
@@ -216,6 +220,7 @@ async def test_hub_settings_and_project_openapi_config(tmp_path: Path):
 
             patched = await client.patch(
                 f"/api/projects/{project['id']}",
+                headers=headers,
                 json={"openapi_url": "http://example.com/v2/openapi.json"},
             )
             assert patched.status_code == 200
@@ -224,13 +229,20 @@ async def test_hub_settings_and_project_openapi_config(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_mcp_streamable_http_path_is_not_double_mounted(tmp_path: Path):
-    settings = Settings(project="hub", data_dir=tmp_path, dashboard_dist=tmp_path / "dist")
-    app = create_app(settings)
+    app = make_app(tmp_path)
     async with app.router.lifespan_context(app):
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             bogus = await client.post("/mcp/mcp")
-            assert bogus.status_code == 404
+            # Auth middleware runs for any /mcp* path before routing.
+            assert bogus.status_code in {401, 404}
+
+            # Create API key for MCP auth
+            headers = await login_headers(client)
+            key_resp = await client.post("/api/api-keys", headers=headers, json={"name": "mcp"})
+            assert key_resp.status_code == 200
+            raw_key = key_resp.json()["raw_key"]
+            await client.post("/api/projects", headers=headers, json={"name": "adra"})
 
             payload = {
                 "jsonrpc": "2.0",
@@ -242,7 +254,16 @@ async def test_mcp_streamable_http_path_is_not_double_mounted(tmp_path: Path):
                     "clientInfo": {"name": "test", "version": "0"},
                 },
             }
-            headers = {"Accept": "application/json, text/event-stream", "Content-Type": "application/json"}
-            ok = await client.post("/mcp", json=payload, headers=headers)
+            mcp_headers = {
+                "Accept": "application/json, text/event-stream",
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {raw_key}",
+                "Project": "adra-backend",
+            }
+            ok = await client.post("/mcp", json=payload, headers=mcp_headers)
             assert ok.status_code != 404
             assert ok.status_code < 500
+
+            # Double mount path should not succeed as a second MCP endpoint with auth.
+            double = await client.post("/mcp/mcp", json=payload, headers=mcp_headers)
+            assert double.status_code in {404, 405}
