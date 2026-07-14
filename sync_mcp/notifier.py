@@ -14,6 +14,7 @@ class ChangeNotifier:
     async def publish(self, change: Change, state: ProjectState) -> None:
         payload = json.dumps(
             {
+                "project_id": state.project_id or change.project_id,
                 "change": change.model_dump(mode="json"),
                 "state": state.model_dump(mode="json"),
             }
