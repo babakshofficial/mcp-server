@@ -7,10 +7,16 @@ services:
       - "8080:8080"
     volumes:
       - ./data:/app/data
+      # Host checkout used for hub on_commit git watch. Set git_repo_path to /repos/AD2 in the dashboard.
+      - ${SYNC_MCP_GIT_HOST_PATH:-../AD2}:/repos/AD2:ro
     environment:
       SYNC_MCP_PROJECT: "my-project"
       SYNC_MCP_STORAGE: "sqlite"
       SYNC_MCP_SECRET: "change-me-in-production"
       SYNC_MCP_ADMIN_USERNAME: "admin"
       SYNC_MCP_ADMIN_PASSWORD: "changeme"
+      # Host bind-mounts are owned by a different UID than the container user.
+      GIT_CONFIG_COUNT: "1"
+      GIT_CONFIG_KEY_0: "safe.directory"
+      GIT_CONFIG_VALUE_0: "*"
       # SYNC_MCP_TOKEN: "legacy-migrated-once"

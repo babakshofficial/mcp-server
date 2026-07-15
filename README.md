@@ -116,7 +116,7 @@ Backend teams do **not** need to republish manually after each code change.
 1. In the dashboard, set the project **OpenAPI URL** (e.g. `http://192.168.17.29:8001/openapi.json`) and enable auto-sync.
 2. Choose **sync mode**:
    - **Every N seconds** (`interval`): fetch OpenAPI on each hub poll tick (default).
-   - **After each commit** (`on_commit`): on each tick, cheaply read local `git rev-parse HEAD`; only fetch OpenAPI when the SHA changes. Requires a **Git repo path** visible to the hub host.
+   - **After each commit** (`on_commit`): on each tick, cheaply read local `git rev-parse HEAD`; only fetch OpenAPI when the SHA changes. Requires a **Git repo path** visible to the hub process. With Docker, `docker-compose.yml` bind-mounts `${SYNC_MCP_GIT_HOST_PATH:-../AD2}` → `/repos/AD2`; set the project **Git repo path** to `/repos/AD2` (not a host path like `/home/.../AD2`).
 3. In **Auto-sync settings**, set the hub poll / check cadence (default **30 seconds**, min 5).
 4. Use **Sync now** on the project page to force an immediate OpenAPI refresh.
 
@@ -157,7 +157,9 @@ Backend example: set `SYNC_AGENT_PROJECT=adra-backend`, optionally `SYNC_AGENT_O
 | `schedule` | Crawl every `SYNC_AGENT_INTERVAL_SECONDS` |
 | `on_commit` | Watch local `git HEAD`; crawl when SHA changes |
 
-After each run the agent reports status to `POST /api/projects/{id}/agent-status` (shown on the project dashboard).
+After each run the agent reports status to `POST /api/projects/{id}/agent-status` (shown on the project dashboard). If that returns **404**, the hub process is an older build — rebuild/redeploy (e.g. `docker compose up --build`) so the new route is present. Status reporting is best-effort and does not block crawls.
+
+**Windows:** the sync Cursor SDK bridge uses `select()` on a pipe and fails with `WinError 10038`. `sync_agent` automatically uses the async bridge on Windows. Prefer running the agent from the **team repo checkout** (`SYNC_AGENT_CWD`), not only from this hub repo. WSL also works if you prefer a Linux environment.
 
 ## First-Connect Workflow (Cursor-driven onboarding)
 

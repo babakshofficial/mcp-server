@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from typing import Any, Callable
 
@@ -75,15 +76,46 @@ def _invoke_agent(
         name: HttpMcpServerConfig(url=cfg["url"], headers=cfg.get("headers"))
         for name, cfg in mcp_servers.items()
     }
-    return Agent.prompt(
-        prompt,
-        AgentOptions(
-            api_key=settings.resolve_cursor_api_key(),
-            model=settings.model,
-            local=LocalAgentOptions(cwd=cwd),
-            mcp_servers=servers,
-        ),
+    options = AgentOptions(
+        api_key=settings.resolve_cursor_api_key(),
+        model=settings.model,
+        local=LocalAgentOptions(cwd=cwd),
+        mcp_servers=servers,
     )
+
+    # Sync Bridge.launch uses selectors.select() on the bridge stderr pipe.
+    # On Windows that raises WinError 10038 (pipes are not selectable). The
+    # async bridge reads stderr via asyncio.subprocess and works on Windows.
+    if sys.platform == "win32" or os.environ.get("SYNC_AGENT_FORCE_ASYNC_BRIDGE") == "1":
+        return _invoke_agent_async(prompt=prompt, options=options, cwd=cwd)
+
+    try:
+        return Agent.prompt(prompt, options)
+    except OSError as exc:
+        if _is_windows_non_socket_error(exc):
+            logger.warning(
+                "Sync Cursor bridge failed (%s); retrying with async bridge",
+                exc,
+            )
+            return _invoke_agent_async(prompt=prompt, options=options, cwd=cwd)
+        raise
+
+
+def _is_windows_non_socket_error(exc: OSError) -> bool:
+    winerror = getattr(exc, "winerror", None)
+    return winerror == 10038 or "10038" in str(exc)
+
+
+def _invoke_agent_async(*, prompt: str, options: Any, cwd: str) -> Any:
+    import asyncio
+
+    from cursor_sdk import AsyncAgent, AsyncCursorClient
+
+    async def _run() -> Any:
+        async with await AsyncCursorClient.launch_bridge(workspace=cwd) as client:
+            return await AsyncAgent.prompt(prompt, options, client=client)
+
+    return asyncio.run(_run())
 
 
 def run_loop(settings: AgentSettings, *, agent_prompt: Callable[..., Any] | None = None) -> int:

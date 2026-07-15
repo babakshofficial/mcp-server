@@ -16,6 +16,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     SYNC_MCP_DASHBOARD_DIST=/app/dashboard/dist
 
 WORKDIR /app
+# git is required for on_commit sync (rev-parse HEAD on mounted repos).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 COPY sync_mcp ./sync_mcp

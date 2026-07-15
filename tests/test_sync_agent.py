@@ -73,6 +73,61 @@ def test_run_once_mocked_agent_ok(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
         assert report.call_args_list[-1].kwargs["status"] == "ok"
 
 
+def test_invoke_agent_uses_async_bridge_when_forced(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("SYNC_AGENT_API_KEY", "sk_test")
+    monkeypatch.setenv("SYNC_AGENT_PROJECT", "demo-backend")
+    monkeypatch.setenv("CURSOR_API_KEY", "cursor_key")
+    monkeypatch.setenv("SYNC_AGENT_CWD", str(tmp_path))
+    monkeypatch.setenv("SYNC_AGENT_FORCE_ASYNC_BRIDGE", "1")
+    settings = AgentSettings()
+
+    fake_sdk = SimpleNamespace(
+        Agent=SimpleNamespace(prompt=lambda *a, **k: None),
+        AgentOptions=lambda **kwargs: SimpleNamespace(**kwargs),
+        HttpMcpServerConfig=lambda **kwargs: SimpleNamespace(**kwargs),
+        LocalAgentOptions=lambda **kwargs: SimpleNamespace(**kwargs),
+    )
+
+    with (
+        patch.dict("sys.modules", {"cursor_sdk": fake_sdk}),
+        patch("sync_agent.runner._invoke_agent_async", return_value=SimpleNamespace(status="finished")) as async_invoke,
+        patch("sync_agent.runner.report_agent_status"),
+    ):
+        from sync_agent.runner import _invoke_agent
+
+        result = _invoke_agent(
+            settings,
+            prompt="hi",
+            cwd=str(tmp_path),
+            mcp_servers={"team-sync": {"url": "http://x/mcp", "headers": {}}},
+            agent_prompt=None,
+        )
+        assert result.status == "finished"
+        async_invoke.assert_called_once()
+
+
+def test_report_agent_status_warns_on_404(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog):
+    import logging
+
+    monkeypatch.setenv("SYNC_AGENT_API_KEY", "sk_test")
+    monkeypatch.setenv("SYNC_AGENT_PROJECT", "adra-frontend")
+    monkeypatch.setenv("CURSOR_API_KEY", "cursor_key")
+    monkeypatch.setenv("SYNC_AGENT_CWD", str(tmp_path))
+    monkeypatch.setenv("SYNC_AGENT_HUB_URL", "http://192.168.17.29:8080/mcp")
+    settings = AgentSettings()
+
+    class FakeResponse:
+        status_code = 404
+        text = '{"detail":"Not Found"}'
+
+    with patch("sync_agent.report.httpx.post", return_value=FakeResponse()):
+        with caplog.at_level(logging.WARNING):
+            from sync_agent.report import report_agent_status
+
+            report_agent_status(settings, status="ok")
+    assert any("outdated" in r.message for r in caplog.records)
+
+
 def test_on_commit_skips_unchanged_head(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("SYNC_AGENT_API_KEY", "sk_test")
     monkeypatch.setenv("SYNC_AGENT_PROJECT", "demo-frontend")

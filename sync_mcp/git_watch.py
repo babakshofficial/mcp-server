@@ -8,18 +8,27 @@ class GitWatchError(RuntimeError):
     pass
 
 
-async def read_head_sha(repo_path: str) -> str:
+def _normalize_repo_path(repo_path: str) -> Path:
     path = Path(repo_path).expanduser()
+    # Dashboard users sometimes paste .../repo/.git; git -C wants the work tree.
+    if path.name == ".git":
+        path = path.parent
+    return path
+
+
+async def read_head_sha(repo_path: str) -> str:
+    path = _normalize_repo_path(repo_path)
     if not path.exists():
         raise GitWatchError(f"Git repo path does not exist: {path}")
-    if not (path / ".git").exists() and not path.joinpath(".git").is_file():
-        # Allow bare-ish worktrees where .git may be a file; still require something git-like.
-        # rev-parse will fail clearly if invalid.
-        pass
+    # Bind-mounted host checkouts often have a different UID than the container
+    # process; mark the path safe for this one-shot read only.
+    resolved = str(path.resolve())
     process = await asyncio.create_subprocess_exec(
         "git",
+        "-c",
+        f"safe.directory={resolved}",
         "-C",
-        str(path),
+        resolved,
         "rev-parse",
         "HEAD",
         stdout=asyncio.subprocess.PIPE,

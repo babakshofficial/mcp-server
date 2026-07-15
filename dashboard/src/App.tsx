@@ -547,7 +547,7 @@ function ProjectDetail({
                 {syncMode === "on_commit" ? (
                   <input
                     className="h-10 rounded-md border bg-background px-3 text-sm"
-                    placeholder="/absolute/path/to/backend-repo"
+                    placeholder="/repos/AD2 (Docker) or /abs/path/to/repo"
                     value={gitRepoPath}
                     onChange={(event) => setGitRepoPath(event.target.value)}
                   />

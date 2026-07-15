@@ -32,7 +32,14 @@ def report_agent_status(
             json={"team": team, "status": status, "error": error, "commit_sha": commit_sha},
             timeout=20.0,
         )
-        if response.status_code >= 400:
+        if response.status_code == 404:
+            logger.warning(
+                "Agent status report failed: 404 (hub at %s is likely outdated — "
+                "rebuild/redeploy so POST /api/projects/{id}/agent-status exists). %s",
+                settings.resolve_rest_base(),
+                response.text[:200],
+            )
+        elif response.status_code >= 400:
             logger.warning("Agent status report failed: %s %s", response.status_code, response.text[:200])
     except Exception as exc:  # noqa: BLE001
         logger.warning("Agent status report error: %s", exc)
