@@ -655,6 +655,41 @@ class JSONStateStore(StateStore):
         item = self._require_item(payload, project_id)
         return [SubprojectRecord.model_validate(s) for s in item.get("subprojects", [])]
 
+    async def update_agent_status(
+        self,
+        project_id: str,
+        team: Team,
+        *,
+        status: str,
+        error: str = "",
+        commit_sha: str = "",
+    ) -> SubprojectRecord:
+        async with self._lock:
+            payload = await self._read()
+            item = self._require_item(payload, project_id)
+            project = Project.model_validate(item["meta"])
+            subprojects = [SubprojectRecord.model_validate(s) for s in item.get("subprojects", [])]
+            current = next((s for s in subprojects if s.team == team), None)
+            now = datetime.now(UTC)
+            record = SubprojectRecord(
+                team=team,
+                status=current.status if current else SubprojectStatus.pending,
+                summary=current.summary if current else "",
+                onboarded_at=current.onboarded_at if current else None,
+                last_agent_at=now,
+                last_agent_status=status,
+                last_agent_error=error,
+                last_agent_sha=commit_sha,
+            )
+            subprojects = [s for s in subprojects if s.team != team] + [record]
+            item["subprojects"] = [s.model_dump(mode="json") for s in subprojects]
+            changes = [Change.model_validate(c) for c in item.get("changes", [])]
+            state = self._rebuild(project, item, changes)
+            item["state"] = state.model_dump(mode="json")
+            item["meta"]["updated_at"] = now.isoformat()
+            await self._write(payload)
+            return record
+
     async def _migrate_legacy(self, payload: dict) -> None:
         project_id = slugify(self.default_project_name)
         now = datetime.now(UTC)

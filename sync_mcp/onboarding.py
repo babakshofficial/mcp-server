@@ -37,10 +37,16 @@ def onboard_instructions(project_id: str, team: Team) -> str:
             "`http://localhost:<port>/openapi.json` (or paste the OpenAPI JSON). "
             "Only fall back to manual route scanning if OpenAPI is unavailable.\n"
         )
+    agent_hint = (
+        "\nFor continuous autonomous updates on this machine, run `python -m sync_agent` "
+        f"with SYNC_AGENT_PROJECT=`{project_id}-{team.value}`, mode `on_commit` or `schedule` "
+        "(see README: Team-local sync agents).\n"
+    )
     return (
         f"You are onboarding the `{team.value}` subproject into Team Sync project `{project_id}`.\n"
         "Explore the currently open workspace thoroughly, then publish findings.\n"
-        f"{openapi_hint}\n"
+        f"{openapi_hint}"
+        f"{agent_hint}\n"
         "Checklist:\n"
         f"{checklist}\n\n"
         "When finished, call `import_snapshot` (or `import_openapi` for FastAPI) with:\n"

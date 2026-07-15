@@ -135,6 +135,18 @@ class StateStore(ABC):
     async def get_subprojects(self, project_id: str) -> list[SubprojectRecord]:
         raise NotImplementedError
 
+    @abstractmethod
+    async def update_agent_status(
+        self,
+        project_id: str,
+        team: Team,
+        *,
+        status: str,
+        error: str = "",
+        commit_sha: str = "",
+    ) -> SubprojectRecord:
+        raise NotImplementedError
+
     # --- Auth / RBAC ---
 
     @abstractmethod

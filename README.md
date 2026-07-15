@@ -131,6 +131,34 @@ curl -X POST http://localhost:8080/api/projects/adra/hooks/commit \
 
 `import_openapi` from Cursor also saves the `openapi_url` and turns on auto-sync for that project.
 
+## Team-local sync agents (autonomous crawl)
+
+Each subproject team runs an agent **on a machine that has their checkout**. The agent uses the Cursor SDK to read the codebase and push updates to the hub over MCP. The hub does **not** need those repos mounted.
+
+```bash
+# On the frontend team's machine
+pip install -e ".[agent]"
+export CURSOR_API_KEY=...                    # from Cursor dashboard
+export SYNC_AGENT_HUB_URL=http://192.168.17.29:8080/mcp
+export SYNC_AGENT_API_KEY=sk_...             # hub API key (editor+ on project)
+export SYNC_AGENT_PROJECT=adra-frontend
+export SYNC_AGENT_CWD=/path/to/frontend-repo
+export SYNC_AGENT_MODE=on_commit             # or: schedule | once
+# export SYNC_AGENT_INTERVAL_SECONDS=300     # for schedule / poll cadence
+python -m sync_agent
+# or: sync-mcp-agent
+```
+
+Backend example: set `SYNC_AGENT_PROJECT=adra-backend`, optionally `SYNC_AGENT_OPENAPI_URL=http://localhost:8001/openapi.json`.
+
+| Mode | Behavior |
+| --- | --- |
+| `once` | Single crawl then exit |
+| `schedule` | Crawl every `SYNC_AGENT_INTERVAL_SECONDS` |
+| `on_commit` | Watch local `git HEAD`; crawl when SHA changes |
+
+After each run the agent reports status to `POST /api/projects/{id}/agent-status` (shown on the project dashboard).
+
 ## First-Connect Workflow (Cursor-driven onboarding)
 
 MCP connection alone does **not** auto-run an agent. After wiring the server, ask Cursor once (or add a project rule) to onboard:

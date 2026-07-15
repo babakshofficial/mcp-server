@@ -43,6 +43,10 @@ export type SubprojectRecord = {
   status: "pending" | "ready";
   summary: string;
   onboarded_at: string | null;
+  last_agent_at?: string | null;
+  last_agent_status?: string;
+  last_agent_error?: string;
+  last_agent_sha?: string;
 };
 
 export type ProjectState = {

@@ -644,6 +644,29 @@ function ProjectDetail({
 
         <Card>
           <CardHeader>
+            <CardTitle>Team agent</CardTitle>
+            <CardDescription>
+              Each team runs a local Cursor SDK agent against their own checkout. The hub does not need those repos mounted.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3 text-sm">
+            <pre className="overflow-x-auto rounded-md border bg-muted p-3 text-xs">{`pip install -e ".[agent]"
+export CURSOR_API_KEY=...
+export SYNC_AGENT_HUB_URL=http://<hub-host>:8080/mcp
+export SYNC_AGENT_API_KEY=sk_...
+export SYNC_AGENT_PROJECT=${projectId}-frontend   # or ${projectId}-backend
+export SYNC_AGENT_CWD=/path/to/team/repo
+export SYNC_AGENT_MODE=on_commit   # or schedule / once
+python -m sync_agent`}</pre>
+            <p className="text-muted-foreground">
+              Use an API key for a user with editor+ on this project. Mode <code>on_commit</code> runs after local HEAD changes;
+              <code>schedule</code> runs every SYNC_AGENT_INTERVAL_SECONDS.
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
             <CardTitle>Subproject status</CardTitle>
           </CardHeader>
           <CardContent>
@@ -927,16 +950,30 @@ function ApiKeysPanel() {
 function SubprojectBadges({ subprojects }: { subprojects: SubprojectRecord[] }) {
   const teams: Array<"backend" | "frontend" | "other"> = ["backend", "frontend", "other"];
   return (
-    <div className="flex flex-wrap gap-2">
-      {teams.map((team) => {
-        const record = subprojects.find((item) => item.team === team);
-        const ready = record?.status === "ready";
-        return (
-          <Badge key={team} className={ready ? "bg-emerald-50 text-emerald-700" : "bg-muted text-muted-foreground"}>
-            {team}: {ready ? "ready" : "pending"}
-          </Badge>
-        );
-      })}
+    <div className="space-y-3">
+      <div className="flex flex-wrap gap-2">
+        {teams.map((team) => {
+          const record = subprojects.find((item) => item.team === team);
+          const ready = record?.status === "ready";
+          return (
+            <Badge key={team} className={ready ? "bg-emerald-50 text-emerald-700" : "bg-muted text-muted-foreground"}>
+              {team}: {ready ? "ready" : "pending"}
+            </Badge>
+          );
+        })}
+      </div>
+      <div className="space-y-1 text-xs text-muted-foreground">
+        {subprojects
+          .filter((s) => s.last_agent_at || s.last_agent_status)
+          .map((s) => (
+            <p key={`agent-${s.team}`}>
+              Agent {s.team}: {s.last_agent_status || "n/a"}
+              {s.last_agent_at ? ` · ${new Date(s.last_agent_at).toLocaleString()}` : ""}
+              {s.last_agent_sha ? ` · ${s.last_agent_sha.slice(0, 12)}` : ""}
+              {s.last_agent_error ? ` · ${s.last_agent_error}` : ""}
+            </p>
+          ))}
+      </div>
     </div>
   );
 }

@@ -102,6 +102,10 @@ class SubprojectRecord(BaseModel):
     status: SubprojectStatus = SubprojectStatus.pending
     summary: str = ""
     onboarded_at: datetime | None = None
+    last_agent_at: datetime | None = None
+    last_agent_status: str = ""
+    last_agent_error: str = ""
+    last_agent_sha: str = ""
 
 
 class Project(BaseModel):

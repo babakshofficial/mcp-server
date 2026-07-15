@@ -54,6 +54,7 @@ class SQLiteStateStore(StateStore):
             await self._migrate_legacy(db)
             await self._ensure_project_columns(db)
             await self._ensure_auth_schema(db)
+            await self._ensure_subproject_agent_columns(db)
             await self._ensure_hub_settings(db)
             await db.commit()
 
@@ -683,6 +684,54 @@ class SQLiteStateStore(StateStore):
             await self._require_project(db, project_id)
             return await self._load_subprojects(db, project_id)
 
+    async def update_agent_status(
+        self,
+        project_id: str,
+        team: Team,
+        *,
+        status: str,
+        error: str = "",
+        commit_sha: str = "",
+    ) -> SubprojectRecord:
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            project = await self._require_project(db, project_id)
+            now = datetime.now(UTC)
+            existing = await self._load_subprojects(db, project_id)
+            current = next((item for item in existing if item.team == team), None)
+            sub_status = current.status if current else SubprojectStatus.pending
+            summary = current.summary if current else ""
+            onboarded_at = current.onboarded_at if current else None
+            await db.execute(
+                """
+                INSERT INTO subprojects (
+                    project_id, team, status, summary, onboarded_at,
+                    last_agent_at, last_agent_status, last_agent_error, last_agent_sha
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(project_id, team) DO UPDATE SET
+                    last_agent_at = excluded.last_agent_at,
+                    last_agent_status = excluded.last_agent_status,
+                    last_agent_error = excluded.last_agent_error,
+                    last_agent_sha = excluded.last_agent_sha
+                """,
+                (
+                    project_id,
+                    team.value,
+                    sub_status.value,
+                    summary,
+                    onboarded_at.isoformat() if onboarded_at else None,
+                    now.isoformat(),
+                    status,
+                    error,
+                    commit_sha,
+                ),
+            )
+            await self._rebuild_and_save(db, project)
+            await db.commit()
+            members = await self._load_subprojects(db, project_id)
+            return next(item for item in members if item.team == team)
+
     async def _ensure_schema(self, db: aiosqlite.Connection) -> None:
         await db.execute(
             """
@@ -785,6 +834,18 @@ class SQLiteStateStore(StateStore):
             """
         )
         await db.execute("CREATE INDEX IF NOT EXISTS idx_api_keys_prefix ON api_keys(prefix)")
+
+    async def _ensure_subproject_agent_columns(self, db: aiosqlite.Connection) -> None:
+        columns = {row[1] for row in await db.execute_fetchall("PRAGMA table_info(subprojects)")}
+        additions = {
+            "last_agent_at": "TEXT",
+            "last_agent_status": "TEXT NOT NULL DEFAULT ''",
+            "last_agent_error": "TEXT NOT NULL DEFAULT ''",
+            "last_agent_sha": "TEXT NOT NULL DEFAULT ''",
+        }
+        for name, ddl in additions.items():
+            if name not in columns:
+                await db.execute(f"ALTER TABLE subprojects ADD COLUMN {name} {ddl}")
 
     async def _ensure_hub_settings(self, db: aiosqlite.Connection) -> None:
         rows = await db.execute_fetchall("SELECT 1 FROM hub_settings WHERE id = 1")
@@ -1038,6 +1099,14 @@ class SQLiteStateStore(StateStore):
                 status=row["status"],
                 summary=row["summary"] or "",
                 onboarded_at=datetime.fromisoformat(row["onboarded_at"]) if row["onboarded_at"] else None,
+                last_agent_at=(
+                    datetime.fromisoformat(row["last_agent_at"])
+                    if "last_agent_at" in row.keys() and row["last_agent_at"]
+                    else None
+                ),
+                last_agent_status=(row["last_agent_status"] if "last_agent_status" in row.keys() else "") or "",
+                last_agent_error=(row["last_agent_error"] if "last_agent_error" in row.keys() else "") or "",
+                last_agent_sha=(row["last_agent_sha"] if "last_agent_sha" in row.keys() else "") or "",
             )
             for row in rows
         ]

@@ -312,6 +312,43 @@ def create_api_router(
         await store.remove_project_member(project_id, user_id)
         return {"status": "removed"}
 
+    @router.post("/projects/{project_id}/agent-status")
+    async def agent_status(
+        project_id: str,
+        body: dict,
+        _: AuthPrincipal = Depends(require_project_access(ProjectRole.editor)),
+    ):
+        """Report last autonomous agent run for a subproject team."""
+        team_raw = str(body.get("team") or "")
+        try:
+            team = Team(team_raw)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="team must be backend, frontend, or other") from exc
+        status = str(body.get("status") or "ok")
+        error = str(body.get("error") or "")
+        commit_sha = str(body.get("commit_sha") or "")
+        try:
+            record = await store.update_agent_status(
+                project_id,
+                team,
+                status=status,
+                error=error,
+                commit_sha=commit_sha,
+            )
+        except ProjectNotFoundError:
+            # Allow slug/name from agent header name segment
+            project = await store.find_project_by_name_or_id(project_id)
+            if project is None:
+                raise HTTPException(status_code=404, detail=f"Project not found: {project_id}") from None
+            record = await store.update_agent_status(
+                project.id,
+                team,
+                status=status,
+                error=error,
+                commit_sha=commit_sha,
+            )
+        return record
+
     @router.get("/projects/{project_id}/state")
     async def project_state(
         project_id: str,
