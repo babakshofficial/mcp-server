@@ -5,7 +5,8 @@ from enum import StrEnum
 from typing import Any
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+from urllib.parse import urlparse
 
 
 class Team(StrEnum):
@@ -167,6 +168,11 @@ class ProjectCreate(BaseModel):
     sync_mode: SyncMode = SyncMode.interval
     git_repo_path: str = ""
 
+    @field_validator("openapi_url")
+    @classmethod
+    def validate_openapi_url(cls, value: str) -> str:
+        return _validate_openapi_fetch_url(value)
+
 
 class ProjectUpdate(BaseModel):
     name: str | None = None
@@ -175,6 +181,27 @@ class ProjectUpdate(BaseModel):
     auto_sync: bool | None = None
     sync_mode: SyncMode | None = None
     git_repo_path: str | None = None
+
+    @field_validator("openapi_url")
+    @classmethod
+    def validate_openapi_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        return _validate_openapi_fetch_url(value)
+
+
+def _validate_openapi_fetch_url(value: str) -> str:
+    """Reject bind addresses that cannot be used as HTTP fetch targets."""
+    text = (value or "").strip()
+    if not text:
+        return ""
+    host = (urlparse(text).hostname or "").lower()
+    if host in {"0.0.0.0", "::", "[::]"}:
+        raise ValueError(
+            "openapi_url must be a reachable host, not a bind address like 0.0.0.0. "
+            "Use the machine LAN IP (e.g. http://192.168.17.29:8001/openapi.json)."
+        )
+    return text
 
 
 class HubSettings(BaseModel):

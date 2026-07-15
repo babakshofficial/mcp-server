@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
+from urllib.parse import urlparse
 
 import httpx
 
@@ -13,6 +14,18 @@ from sync_mcp.openapi_diff import diff_openapi_changes, endpoints_and_fingerprin
 from sync_mcp.storage.base import StateStore
 
 logger = logging.getLogger(__name__)
+
+_UNREACHABLE_OPENAPI_HOSTS = frozenset({"0.0.0.0", "::", "[::]"})
+
+
+def _openapi_url_unreachable_reason(openapi_url: str) -> str | None:
+    host = (urlparse(openapi_url).hostname or "").lower()
+    if host in _UNREACHABLE_OPENAPI_HOSTS:
+        return (
+            f"{openapi_url!r} uses bind address {host!r}, which is not a fetchable host. "
+            "Set OpenAPI URL to the host LAN IP, e.g. http://192.168.17.29:8001/openapi.json"
+        )
+    return None
 
 
 @dataclass
@@ -50,6 +63,11 @@ class AutoSyncService:
     async def sync_project(self, project: Project, *, trigger: str = "auto_sync", commit_sha: str | None = None) -> bool:
         """Fetch OpenAPI and apply diffs. Returns True if state changed."""
         if not project.openapi_url:
+            return False
+        bad = _openapi_url_unreachable_reason(project.openapi_url)
+        if bad:
+            logger.warning("Auto-sync failed for %s: %s", project.id, bad)
+            await self.store.update_sync_status(project.id, status="error", error=bad)
             return False
         try:
             async with httpx.AsyncClient(timeout=20.0) as client:
