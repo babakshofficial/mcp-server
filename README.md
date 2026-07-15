@@ -113,7 +113,7 @@ Also make sure the hub process is running (`python -m sync_mcp` or `docker compo
 
 Backend teams do **not** need to republish manually after each code change.
 
-1. In the dashboard, set the project **OpenAPI URL** (e.g. `http://192.168.17.29:8001/openapi.json`) and enable auto-sync.
+1. In the dashboard, set the project **OpenAPI URL** to an address the **hub process** can reach (e.g. `http://192.168.17.29:8001/openapi.json`) and enable auto-sync. Do **not** use `localhost` / `127.0.0.1` when the hub runs in Docker — that points at the container itself. Use the host LAN IP, `host.docker.internal` (Docker Desktop), or `http://172.17.0.1:<port>` (Linux bridge gateway) depending on where the backend listens.
 2. Choose **sync mode**:
    - **Every N seconds** (`interval`): fetch OpenAPI on each hub poll tick (default).
    - **After each commit** (`on_commit`): on each tick, cheaply read local `git rev-parse HEAD`; only fetch OpenAPI when the SHA changes. Requires a **Git repo path** visible to the hub process. With Docker, `docker-compose.yml` bind-mounts `${SYNC_MCP_GIT_HOST_PATH:-../AD2}` → `/repos/AD2`; set the project **Git repo path** to `/repos/AD2` (not a host path like `/home/.../AD2`).

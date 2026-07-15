@@ -121,7 +121,12 @@ class AutoSyncService:
                 await self.notifier.publish(last_change, next_state)
             return True
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Auto-sync failed for %s: %s", project.id, exc)
+            logger.warning(
+                "Auto-sync failed for %s (%s): %s",
+                project.id,
+                project.openapi_url,
+                exc,
+            )
             await self.store.update_sync_status(project.id, status="error", error=str(exc))
             return False
 

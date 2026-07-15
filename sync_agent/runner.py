@@ -87,6 +87,7 @@ def _invoke_agent(
     # On Windows that raises WinError 10038 (pipes are not selectable). The
     # async bridge reads stderr via asyncio.subprocess and works on Windows.
     if sys.platform == "win32" or os.environ.get("SYNC_AGENT_FORCE_ASYNC_BRIDGE") == "1":
+        logger.info("Using async Cursor bridge (Windows / SYNC_AGENT_FORCE_ASYNC_BRIDGE)")
         return _invoke_agent_async(prompt=prompt, options=options, cwd=cwd)
 
     try:
@@ -176,4 +177,10 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as exc:
         logger.error("%s", exc)
         return 1
+    logger.info(
+        "sync_agent starting mode=%s cwd=%s platform=%s",
+        settings.mode.value,
+        settings.cwd,
+        sys.platform,
+    )
     return run_loop(settings)
