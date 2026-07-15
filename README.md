@@ -64,6 +64,10 @@ python -m sync_mcp
 | `SYNC_MCP_ADMIN_USERNAME` | empty | Bootstrap admin username when no users exist. |
 | `SYNC_MCP_ADMIN_PASSWORD` | empty | Bootstrap admin password when no users exist. |
 | `SYNC_MCP_TOKEN` | empty | Deprecated; migrated once into an admin API key if present and no keys exist. |
+| `SYNC_MCP_HTTP_PROXY` | empty | HTTP proxy for outbound **public** web fetches (OpenAPI URLs on the internet). Falls back to `HTTP_PROXY`. |
+| `SYNC_MCP_HTTPS_PROXY` | empty | HTTPS proxy for outbound public web fetches. Falls back to `HTTPS_PROXY`, then `SYNC_MCP_HTTP_PROXY` / `HTTP_PROXY`. |
+
+**HTTP proxy (internet only):** OpenAPI auto-sync and `import_openapi` URL fetches use a proxy only for non-local hosts. Private LAN (`192.168.x.x`), loopback (`127.0.0.1`, `localhost`), and link-local addresses always connect directly — so a corporate proxy does not break LAN OpenAPI URLs like `http://192.168.17.29:8001/openapi.json`. `sync_agent` status posts to the hub use the same rules. Cursor SDK cloud traffic is separate; set `HTTPS_PROXY` on the agent process if Cursor itself needs a proxy.
 
 Existing single-project databases are auto-migrated into one project (slug derived from `SYNC_MCP_PROJECT`) on startup.
 

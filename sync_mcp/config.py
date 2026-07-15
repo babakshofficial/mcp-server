@@ -28,6 +28,14 @@ class Settings(BaseSettings):
     port: int = 8080
     dashboard_dist: Path = Path("dashboard/dist")
     jwt_ttl_seconds: int = Field(default=60 * 60 * 24 * 7, description="Dashboard JWT lifetime.")
+    http_proxy: str = Field(
+        default="",
+        description="HTTP proxy for outbound public web fetches (falls back to HTTP_PROXY).",
+    )
+    https_proxy: str = Field(
+        default="",
+        description="HTTPS proxy for outbound public web fetches (falls back to HTTPS_PROXY, then http_proxy).",
+    )
 
     @property
     def sqlite_path(self) -> Path:

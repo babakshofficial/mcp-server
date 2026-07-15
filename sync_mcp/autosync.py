@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 import httpx
 
 from sync_mcp.git_watch import GitWatchError, read_head_sha
+from sync_mcp.http_proxy import async_client_for
 from sync_mcp.models import ChangeCreate, ChangeType, HubSettings, Project, SubprojectStatus, SyncMode, Team
 from sync_mcp.notifier import ChangeNotifier
 from sync_mcp.openapi_diff import diff_openapi_changes, endpoints_and_fingerprint
@@ -70,7 +71,7 @@ class AutoSyncService:
             await self.store.update_sync_status(project.id, status="error", error=bad)
             return False
         try:
-            async with httpx.AsyncClient(timeout=20.0) as client:
+            async with async_client_for(project.openapi_url, timeout=20.0) as client:
                 response = await client.get(project.openapi_url)
                 response.raise_for_status()
                 spec = response.json()

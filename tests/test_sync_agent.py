@@ -120,7 +120,17 @@ def test_report_agent_status_warns_on_404(tmp_path: Path, monkeypatch: pytest.Mo
         status_code = 404
         text = '{"detail":"Not Found"}'
 
-    with patch("sync_agent.report.httpx.post", return_value=FakeResponse()):
+    class FakeClient:
+        def post(self, *args, **kwargs):
+            return FakeResponse()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+    with patch("sync_agent.report.sync_client_for", return_value=FakeClient()):
         with caplog.at_level(logging.WARNING):
             from sync_agent.report import report_agent_status
 

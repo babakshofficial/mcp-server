@@ -4,9 +4,8 @@ import logging
 from typing import Any
 from urllib.parse import urljoin
 
-import httpx
-
 from sync_agent.config import AgentSettings
+from sync_mcp.http_proxy import sync_client_for
 
 logger = logging.getLogger(__name__)
 
@@ -23,15 +22,15 @@ def report_agent_status(
     project_id = _project_id_from_header(settings.project)
     url = urljoin(settings.resolve_rest_base() + "/", f"api/projects/{project_id}/agent-status")
     try:
-        response = httpx.post(
-            url,
-            headers={
-                "Authorization": f"Bearer {settings.api_key}",
-                "Content-Type": "application/json",
-            },
-            json={"team": team, "status": status, "error": error, "commit_sha": commit_sha},
-            timeout=20.0,
-        )
+        with sync_client_for(url, timeout=20.0) as client:
+            response = client.post(
+                url,
+                headers={
+                    "Authorization": f"Bearer {settings.api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={"team": team, "status": status, "error": error, "commit_sha": commit_sha},
+            )
         if response.status_code == 404:
             logger.warning(
                 "Agent status report failed: 404 (hub at %s is likely outdated — "

@@ -19,4 +19,8 @@ services:
       GIT_CONFIG_COUNT: "1"
       GIT_CONFIG_KEY_0: "safe.directory"
       GIT_CONFIG_VALUE_0: "*"
+      HTTP_PROXY: ${HTTP_PROXY:-}
+      HTTPS_PROXY: ${HTTPS_PROXY:-}
+      SYNC_MCP_HTTP_PROXY: ${SYNC_MCP_HTTP_PROXY:-}
+      SYNC_MCP_HTTPS_PROXY: ${SYNC_MCP_HTTPS_PROXY:-}
       # SYNC_MCP_TOKEN: "legacy-migrated-once"

@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
-import httpx
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
 from sync_mcp.auth import rbac
 from sync_mcp.config import Settings
+from sync_mcp.http_proxy import async_client_for
 from sync_mcp.models import (
     ApiEndpoint,
     ChangeCreate,
@@ -201,7 +201,7 @@ def create_mcp_server(store: StateStore, notifier: ChangeNotifier, settings: Set
             if openapi_json is None:
                 if not openapi_url:
                     return {"error": "provide openapi_url or openapi_json"}
-                async with httpx.AsyncClient(timeout=30.0) as client:
+                async with async_client_for(openapi_url, timeout=30.0) as client:
                     response = await client.get(openapi_url)
                     response.raise_for_status()
                     openapi_json = response.json()
