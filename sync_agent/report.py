@@ -52,13 +52,15 @@ def _project_id_from_header(project_header: str) -> str:
 
 def build_mcp_servers(settings: AgentSettings) -> dict[str, Any]:
     """Build HttpMcpServerConfig mapping; uses dict form for easier mocking in tests."""
+    name, team = settings.project_name_and_team()
     return {
         "team-sync": {
             "type": "http",
             "url": settings.hub_url,
             "headers": {
                 "Authorization": f"Bearer {settings.api_key}",
-                "Project": settings.project,
+                "Project": name,
+                "Team": team,
             },
         }
     }

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from mcp.server.fastmcp import Context, FastMCP
@@ -10,7 +11,11 @@ from sync_mcp.config import Settings
 from sync_mcp.http_proxy import async_client_for
 from sync_mcp.models import (
     ApiEndpoint,
+    Artifact,
+    ArtifactImport,
+    ChangeAckCreate,
     ChangeCreate,
+    ChangeType,
     ComponentSpec,
     ProjectRole,
     ProjectUpdate,
@@ -19,6 +24,8 @@ from sync_mcp.models import (
     SnapshotImport,
     SnapshotResult,
     Team,
+    Teams,
+    normalize_team,
 )
 from sync_mcp.notifier import ChangeNotifier
 from sync_mcp.onboarding import onboard_checklist, onboard_instructions
@@ -71,7 +78,7 @@ def create_mcp_server(store: StateStore, notifier: ChangeNotifier, settings: Set
 
     def resolve_team(explicit: str | None = None) -> Team:
         if explicit:
-            return Team(explicit)
+            return normalize_team(explicit)
         ctx = get_project_context()
         if ctx is not None:
             return ctx.team
@@ -88,7 +95,12 @@ def create_mcp_server(store: StateStore, notifier: ChangeNotifier, settings: Set
         return [project.model_dump(mode="json") for project in projects]
 
     @mcp.tool()
-    async def register_project(name: str, description: str = "") -> dict[str, Any]:
+    async def register_project(
+        name: str,
+        description: str = "",
+        template: str = "web",
+        teams: list[str] | None = None,
+    ) -> dict[str, Any]:
         """Create a project (or return the existing one with the same slug)."""
         try:
             principal = require_principal()
@@ -96,19 +108,28 @@ def create_mcp_server(store: StateStore, notifier: ChangeNotifier, settings: Set
                 return _forbidden("Cannot create projects")
         except PermissionError as exc:
             return _forbidden(str(exc))
-        existing = await store.list_projects_for_user(principal.user_id, is_admin=True)
+        from sync_mcp.models import PROJECT_TEMPLATES, resolve_project_teams
         from sync_mcp.state import slugify
+
+        if template not in PROJECT_TEMPLATES:
+            return {"error": f"template must be one of: {', '.join(sorted(PROJECT_TEMPLATES))}"}
+        team_list = resolve_project_teams(template=template, teams=teams)
+        existing = await store.list_projects_for_user(principal.user_id, is_admin=True)
 
         slug = slugify(name)
         for project in existing:
             if project.id == slug or project.name.lower() == name.lower():
                 return {"created": False, "project": project.model_dump(mode="json")}
-        # Also check global uniqueness
         all_projects = await store.list_projects()
         for project in all_projects:
             if project.id == slug or project.name.lower() == name.lower():
                 return {"created": False, "project": project.model_dump(mode="json")}
-        project = await store.create_project(name, description, owner_user_id=principal.user_id)
+        project = await store.create_project(
+            name,
+            description,
+            owner_user_id=principal.user_id,
+            teams=team_list,
+        )
         return {"created": True, "project": project.model_dump(mode="json")}
 
     @mcp.tool()
@@ -130,10 +151,10 @@ def create_mcp_server(store: StateStore, notifier: ChangeNotifier, settings: Set
                 "subproject": current.model_dump(mode="json") if current else None,
                 "checklist": onboard_checklist(team_enum),
                 "instructions": onboard_instructions(resolved_id, team_enum),
-                "next_tool": "import_openapi" if team_enum == Team.backend else "import_snapshot",
+                "next_tool": "import_openapi" if team_enum == Teams.backend else "import_snapshot",
                 "openapi_hint": (
                     "For FastAPI, call import_openapi with openapi_url like http://localhost:8000/openapi.json"
-                    if team_enum == Team.backend
+                    if team_enum == Teams.backend
                     else None
                 ),
             }
@@ -151,10 +172,15 @@ def create_mcp_server(store: StateStore, notifier: ChangeNotifier, settings: Set
         api: list[dict[str, Any]] | None = None,
         components: list[dict[str, Any]] | None = None,
         requirements: list[dict[str, Any]] | None = None,
+        artifacts: list[dict[str, Any]] | None = None,
         notes: str = "",
+        replace: bool = False,
         ctx: Context | None = None,
     ) -> dict[str, Any]:
-        """Bulk-publish discovered APIs/components/requirements after codebase review."""
+        """Bulk-publish discovered APIs/components/requirements after codebase review.
+
+        Set replace=true to prune team-owned items missing from this snapshot.
+        """
         try:
             resolved_id = resolve_project_id(project_id)
             await require_project_role(resolved_id, ProjectRole.editor)
@@ -164,7 +190,9 @@ def create_mcp_server(store: StateStore, notifier: ChangeNotifier, settings: Set
                 api=[ApiEndpoint.model_validate(item) for item in (api or [])],
                 components=[ComponentSpec.model_validate(item) for item in (components or [])],
                 requirements=[Requirement.model_validate(item) for item in (requirements or [])],
+                artifacts=[Artifact.model_validate(item) for item in (artifacts or [])],
                 notes=notes,
+                replace=replace,
             )
             saved, next_state = await store.import_snapshot(resolved_id, snapshot)
             await notifier.publish(saved, next_state)
@@ -185,6 +213,119 @@ def create_mcp_server(store: StateStore, notifier: ChangeNotifier, settings: Set
             return {"error": "invalid_arguments", "detail": str(exc)}
 
     @mcp.tool()
+    async def import_artifacts(
+        project_id: str | None = None,
+        team: str | None = None,
+        artifacts: list[dict[str, Any]] | None = None,
+        notes: str = "",
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        """Upsert typed artifacts (env vars, flags, events, tokens, etc.)."""
+        try:
+            resolved_id = resolve_project_id(project_id)
+            await require_project_role(resolved_id, ProjectRole.editor)
+            team_enum = resolve_team(team)
+            body = ArtifactImport(
+                team=team_enum,
+                artifacts=[Artifact.model_validate(item) for item in (artifacts or [])],
+                notes=notes,
+            )
+            last = None
+            next_state = await store.get_state(resolved_id)
+            for artifact in body.artifacts:
+                change = ChangeCreate(
+                    team=body.team,
+                    type=ChangeType.artifact_upsert,
+                    description=artifact.title or artifact.key,
+                    details={
+                        "kind": artifact.kind.value,
+                        "key": artifact.key,
+                        "title": artifact.title,
+                        "description": artifact.description,
+                        **artifact.details,
+                    },
+                )
+                last, next_state = await store.publish(resolved_id, change)
+            if notes.strip():
+                last, next_state = await store.publish(
+                    resolved_id,
+                    ChangeCreate(
+                        team=body.team,
+                        type=ChangeType.changelog,
+                        description=notes.strip(),
+                        details={"source": "import_artifacts", "count": len(body.artifacts)},
+                    ),
+                )
+            if last is not None:
+                await notifier.publish(last, next_state)
+                if ctx is not None:
+                    await _notify_mcp_resources(ctx, resolved_id)
+            return {"imported": len(body.artifacts), "state": next_state.model_dump(mode="json")}
+        except ProjectNotFoundError as exc:
+            return _project_error(exc)
+        except PermissionError as exc:
+            return _forbidden(str(exc))
+        except ValueError as exc:
+            return {"error": "invalid_arguments", "detail": str(exc)}
+
+    @mcp.tool()
+    async def acknowledge_change(
+        change_id: str,
+        status: str,
+        project_id: str | None = None,
+        team: str | None = None,
+        note: str = "",
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        """Acknowledge a changelog entry (ack | blocked | needs_version)."""
+        try:
+            resolved_id = resolve_project_id(project_id)
+            principal = await require_project_role(resolved_id, ProjectRole.viewer)
+            team_enum = resolve_team(team)
+            body = ChangeAckCreate(change_id=change_id, team=team_enum, status=status, note=note)
+            saved, next_state = await store.publish(
+                resolved_id,
+                ChangeCreate(
+                    team=body.team,
+                    type=ChangeType.change_ack,
+                    description=f"{body.status.value} change {body.change_id}",
+                    details={
+                        "change_id": body.change_id,
+                        "status": body.status.value,
+                        "note": body.note,
+                        "user_id": principal.user_id,
+                        "username": principal.username,
+                    },
+                ),
+            )
+            await notifier.publish(saved, next_state)
+            if ctx is not None:
+                await _notify_mcp_resources(ctx, resolved_id)
+            return {"ack": saved.model_dump(mode="json"), "state": next_state.model_dump(mode="json")}
+        except ProjectNotFoundError as exc:
+            return _project_error(exc)
+        except PermissionError as exc:
+            return _forbidden(str(exc))
+        except ValueError as exc:
+            return {"error": "invalid_arguments", "detail": str(exc)}
+
+    @mcp.tool()
+    async def get_artifacts(project_id: str | None = None, kind: str | None = None) -> dict[str, Any]:
+        """List typed artifacts for a project, optionally filtered by kind."""
+        try:
+            resolved_id = resolve_project_id(project_id)
+            await require_project_role(resolved_id, ProjectRole.viewer)
+            state = await store.get_state(resolved_id)
+            items = state.artifacts
+            if kind:
+                items = [a for a in items if a.kind.value == kind]
+            return {"project_id": resolved_id, "artifacts": [a.model_dump(mode="json") for a in items]}
+        except ProjectNotFoundError as exc:
+            return _project_error(exc)
+        except PermissionError as exc:
+            return _forbidden(str(exc))
+
+    @mcp.tool()
     async def import_openapi(
         project_id: str | None = None,
         openapi_url: str | None = None,
@@ -197,7 +338,7 @@ def create_mcp_server(store: StateStore, notifier: ChangeNotifier, settings: Set
         try:
             resolved_id = resolve_project_id(project_id)
             await require_project_role(resolved_id, ProjectRole.editor)
-            team_enum = resolve_team(team) if team is not None or get_project_context() else Team.backend
+            team_enum = resolve_team(team) if team is not None or get_project_context() else Teams.backend
             if openapi_json is None:
                 if not openapi_url:
                     return {"error": "provide openapi_url or openapi_json"}
@@ -316,7 +457,7 @@ def create_mcp_server(store: StateStore, notifier: ChangeNotifier, settings: Set
             if resolved_team is None:
                 ctx = get_project_context()
                 if ctx is not None:
-                    resolved_team = ctx.team.value
+                    resolved_team = ctx.team
             changes = await store.get_changelog(
                 resolved_id,
                 since=since,
@@ -350,26 +491,35 @@ def create_mcp_server(store: StateStore, notifier: ChangeNotifier, settings: Set
 
     @mcp.resource("sync://projects")
     async def projects_resource() -> str:
-        """All projects in this hub."""
-        projects = await store.list_projects()
+        """Projects visible to the authenticated principal."""
+        principal = get_principal_context()
+        if principal is None:
+            return json.dumps({"error": "Authentication required"})
+        projects = await store.list_projects_for_user(principal.user_id, is_admin=principal.is_admin)
         return "[" + ",".join(project.model_dump_json(indent=2) for project in projects) + "]"
 
     @mcp.resource("sync://projects/{project_id}/state")
     async def state_resource(project_id: str) -> str:
-        """Current aggregated state for a project."""
+        """Current aggregated state for a project (membership required)."""
         try:
+            await require_project_role(project_id, ProjectRole.viewer)
             return (await store.get_state(project_id)).model_dump_json(indent=2)
+        except PermissionError as exc:
+            return json.dumps(_forbidden(str(exc)))
         except ProjectNotFoundError as exc:
-            return str(_project_error(exc))
+            return json.dumps(_project_error(exc))
 
     @mcp.resource("sync://projects/{project_id}/changelog")
     async def changelog_resource(project_id: str) -> str:
-        """Recent changelog for a project."""
+        """Recent changelog for a project (membership required)."""
         try:
+            await require_project_role(project_id, ProjectRole.viewer)
             changes = await store.get_changelog(project_id, limit=50)
             return "[" + ",".join(change.model_dump_json(indent=2) for change in changes) + "]"
+        except PermissionError as exc:
+            return json.dumps(_forbidden(str(exc)))
         except ProjectNotFoundError as exc:
-            return str(_project_error(exc))
+            return json.dumps(_project_error(exc))
 
     @mcp.prompt()
     async def onboard_subproject_prompt(project_id: str | None = None, team: str | None = None) -> str:

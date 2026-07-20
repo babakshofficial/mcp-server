@@ -91,7 +91,7 @@ Existing single-project databases are auto-migrated into one project (slug deriv
 
 ## Cursor MCP Configuration
 
-Use an **API key** (not the dashboard JWT) plus a **Project** header:
+Use an **API key** (not the dashboard JWT) plus **Project** and **Team** headers (preferred):
 
 ```json
 {
@@ -100,18 +100,49 @@ Use an **API key** (not the dashboard JWT) plus a **Project** header:
       "url": "http://localhost:8080/mcp",
       "headers": {
         "Authorization": "Bearer sk_YOUR_API_KEY",
-        "Project": "adra-backend"
+        "Project": "adra",
+        "Team": "backend"
       }
     }
   }
 }
 ```
 
-`Project: adra-backend` scopes tools to project `adra` and team `backend` (last `-` segment: `backend` | `frontend` | `other`). Bearer + Project are required on `/mcp`. The API key’s user must be a member of that project (or hub admin).
+Also accepted: `Project: adra/backend`, or legacy `Project: adra-backend`. Team slugs are lowercase (`frontend`, `backend`, `mobile`, `qa`, …). Bearer + Project (with Team, slash form, or legacy suffix) are required on `/mcp`. The API key’s user must be a member of that project (or hub admin).
 
 If you previously saw `POST ... Not Found` / SSE `404`, restart Team Sync — an older bug mounted FastMCP at `/mcp/mcp`. The endpoint is now `/mcp`.
 
 Also make sure the hub process is running (`python -m sync_mcp` or `docker compose up`) before enabling the MCP server in Cursor. Early `ERR_CONNECTION_REFUSED` means nothing was listening on port 8080.
+
+## CI / REST import (no Cursor SDK)
+
+When the Cursor SDK is unavailable (e.g. region blocks), push contracts with the hub REST API:
+
+```bash
+pip install -e .
+# Backend OpenAPI (URL must be reachable from the machine running the CLI)
+sync-mcp-import openapi --hub http://192.168.17.29:8080 \
+  --api-key sk_... --project adra --url http://192.168.17.29:8001/openapi.json
+
+# Frontend snapshot JSON (supports --replace to prune stale components)
+sync-mcp-import snapshot --hub http://192.168.17.29:8080 \
+  --api-key sk_... --project adra --team frontend --file snapshot.json --replace
+
+# Trigger on_commit OpenAPI sync
+sync-mcp-import commit --hub http://192.168.17.29:8080 --api-key sk_... --project adra --sha abc123
+```
+
+Example `snapshot.json`:
+
+```json
+{
+  "team": "frontend",
+  "components": [{"name": "UserTable", "spec": "props: rows[]"}],
+  "requirements": [{"id": "tax", "title": "Need tax field"}],
+  "artifacts": [{"kind": "env_var", "key": "VITE_API_URL", "title": "API base"}],
+  "replace": true
+}
+```
 
 ## Automatic OpenAPI sync
 
@@ -197,9 +228,12 @@ openapi_url=http://localhost:8000/openapi.json
 | Tool | Purpose |
 | --- | --- |
 | `list_projects` | List hub projects |
-| `register_project(name, description?)` | Create a project |
+| `register_project(name, description?, template?, teams?)` | Create a project (`web` / `mobile` / `monorepo` / `blank` templates) |
 | `onboard_subproject(project_id?, team?)` | Return checklist + instructions |
-| `import_snapshot(project_id?, team?, ...)` | Bulk import after review |
+| `import_snapshot(..., replace?)` | Bulk import; `replace=true` prunes missing team-owned items |
+| `import_artifacts(...)` | Upsert typed artifacts (env vars, flags, events, …) |
+| `acknowledge_change(change_id, status, ...)` | Mark a change `ack` / `blocked` / `needs_version` |
+| `get_artifacts(project_id?, kind?)` | List artifacts |
 | `import_openapi(project_id?, openapi_url?, openapi_json?, team?)` | Import FastAPI/OpenAPI routes |
 | `publish_update(project_id?, team?, type, description, details)` | Publish one change |
 | `get_latest_state(project_id?)` | Full state + markdown digest |

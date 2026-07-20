@@ -5,7 +5,7 @@ import httpx
 import pytest
 
 from sync_mcp.config import Settings
-from sync_mcp.models import ApiEndpoint, ChangeCreate, ChangeType, SnapshotImport, Team
+from sync_mcp.models import ApiEndpoint, ChangeCreate, ChangeType, SnapshotImport, Team, Teams
 from sync_mcp.storage.sqlite_store import SQLiteStateStore
 from tests.conftest import login_headers, make_app
 
@@ -145,18 +145,18 @@ async def test_store_import_snapshot_marks_subproject(tmp_path: Path):
     _, state = await store.import_snapshot(
         project.id,
         SnapshotImport(
-            team=Team.backend,
+            team=Teams.backend,
             api=[ApiEndpoint(method="POST", path="/checkout", description="Create checkout")],
             notes="Reviewed routes.py",
         ),
     )
     assert state.api[0].path == "/checkout"
-    assert state.subprojects[0].team == Team.backend
+    assert state.subprojects[0].team == Teams.backend
     assert state.subprojects[0].status.value == "ready"
 
     _, state2 = await store.publish(
         project.id,
-        ChangeCreate(team=Team.frontend, type=ChangeType.requirement_added, description="Need tax field", details={"id": "tax"}),
+        ChangeCreate(team=Teams.frontend, type=ChangeType.requirement_added, description="Need tax field", details={"id": "tax"}),
     )
     assert any(item.id == "tax" for item in state2.requirements)
 

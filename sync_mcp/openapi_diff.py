@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 from typing import Any
 
-from sync_mcp.models import ApiEndpoint, ChangeCreate, ChangeType, Team
+from sync_mcp.models import ApiEndpoint, ChangeCreate, ChangeType, Team, Teams
 from sync_mcp.openapi_import import endpoints_from_openapi
 
 
@@ -19,7 +19,7 @@ def diff_openapi_changes(
     current: list[ApiEndpoint],
     discovered: list[ApiEndpoint],
     *,
-    team: Team = Team.backend,
+    team: Team = Teams.backend,
 ) -> list[ChangeCreate]:
     """Diff current API surface against OpenAPI discoveries."""
     current_map = {(item.method, item.path): item for item in current}
@@ -67,7 +67,7 @@ def diff_openapi_changes(
     return changes
 
 
-def endpoints_and_fingerprint(spec: dict[str, Any], *, team: Team = Team.backend) -> tuple[list[ApiEndpoint], str]:
+def endpoints_and_fingerprint(spec: dict[str, Any], *, team: Team = Teams.backend) -> tuple[list[ApiEndpoint], str]:
     endpoints = endpoints_from_openapi(spec, team=team)
     return endpoints, openapi_fingerprint(endpoints)
 

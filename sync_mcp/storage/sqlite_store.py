@@ -13,6 +13,7 @@ from sync_mcp.models import (
     Change,
     ChangeCreate,
     ChangeType,
+    DEFAULT_PROJECT_TEAMS,
     HubRole,
     HubSettings,
     HubSettingsUpdate,
@@ -106,10 +107,14 @@ class SQLiteStateStore(StateStore):
         sync_mode: str = "interval",
         git_repo_path: str = "",
         owner_user_id: str | None = None,
+        teams: list[str] | None = None,
     ) -> Project:
+        from sync_mcp.models import DEFAULT_PROJECT_TEAMS, SubprojectRecord, SubprojectStatus
+
         project_id = await self._unique_slug(name)
         now = datetime.now(UTC)
         mode = SyncMode(sync_mode)
+        team_list = list(teams) if teams is not None else list(DEFAULT_PROJECT_TEAMS)
         project = Project(
             id=project_id,
             name=name,
@@ -120,6 +125,7 @@ class SQLiteStateStore(StateStore):
             auto_sync=auto_sync,
             sync_mode=mode,
             git_repo_path=git_repo_path,
+            teams=team_list,
         )
         async with aiosqlite.connect(self.path) as db:
             await db.execute(
@@ -127,9 +133,9 @@ class SQLiteStateStore(StateStore):
                 INSERT INTO projects (
                     id, name, description, created_at, updated_at,
                     openapi_url, auto_sync, sync_mode, git_repo_path, last_git_sha,
-                    last_sync_at, last_sync_status, last_sync_error, openapi_fingerprint
+                    last_sync_at, last_sync_status, last_sync_error, openapi_fingerprint, teams
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', NULL, '', '', '')
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', NULL, '', '', '', ?)
                 """,
                 (
                     project.id,
@@ -141,12 +147,28 @@ class SQLiteStateStore(StateStore):
                     1 if project.auto_sync else 0,
                     project.sync_mode.value,
                     project.git_repo_path,
+                    json.dumps(team_list),
                 ),
             )
+            subprojects = [
+                SubprojectRecord(team=t, status=SubprojectStatus.pending, summary="Awaiting onboarding")
+                for t in team_list
+            ]
             await db.execute(
                 "INSERT INTO aggregated_state (project_id, state) VALUES (?, ?)",
-                (project.id, empty_state(project.name, project.id).model_dump_json()),
+                (
+                    project.id,
+                    empty_state(project.name, project.id, subprojects=subprojects).model_dump_json(),
+                ),
             )
+            for record in subprojects:
+                await self._upsert_subproject(
+                    db,
+                    project.id,
+                    record.team,
+                    SubprojectStatus.pending,
+                    summary=record.summary,
+                )
             if owner_user_id:
                 await db.execute(
                     """
@@ -168,6 +190,7 @@ class SQLiteStateStore(StateStore):
             auto_sync = update.auto_sync if update.auto_sync is not None else project.auto_sync
             sync_mode = update.sync_mode if update.sync_mode is not None else project.sync_mode
             git_repo_path = update.git_repo_path if update.git_repo_path is not None else project.git_repo_path
+            teams = update.teams if update.teams is not None else project.teams
             fingerprint = (
                 ""
                 if update.openapi_url is not None and update.openapi_url != project.openapi_url
@@ -185,7 +208,7 @@ class SQLiteStateStore(StateStore):
                 UPDATE projects
                 SET name = ?, description = ?, openapi_url = ?, auto_sync = ?,
                     sync_mode = ?, git_repo_path = ?, last_git_sha = ?,
-                    openapi_fingerprint = ?, updated_at = ?
+                    openapi_fingerprint = ?, teams = ?, updated_at = ?
                 WHERE id = ?
                 """,
                 (
@@ -197,6 +220,7 @@ class SQLiteStateStore(StateStore):
                     git_repo_path,
                     last_git_sha,
                     fingerprint,
+                    json.dumps(teams),
                     now,
                     project_id,
                 ),
@@ -580,48 +604,14 @@ class SQLiteStateStore(StateStore):
         project_id: str,
         snapshot: SnapshotImport,
     ) -> tuple[Change, ProjectState]:
+        from sync_mcp.snapshot_ops import prune_changes_for_replace, snapshot_to_changes
+
         async with aiosqlite.connect(self.path) as db:
             db.row_factory = aiosqlite.Row
             project = await self._require_project(db, project_id)
-            synthetic: list[ChangeCreate] = []
-            for endpoint in snapshot.api:
-                synthetic.append(
-                    ChangeCreate(
-                        team=snapshot.team,
-                        type=ChangeType.api_added,
-                        description=f"{endpoint.method} {endpoint.path}",
-                        details={
-                            "method": endpoint.method,
-                            "path": endpoint.path,
-                            "description": endpoint.description,
-                            **endpoint.details,
-                        },
-                    )
-                )
-            for component in snapshot.components:
-                synthetic.append(
-                    ChangeCreate(
-                        team=snapshot.team,
-                        type=ChangeType.component_spec,
-                        description=component.name,
-                        details={"name": component.name, "spec": component.spec, **component.details},
-                    )
-                )
-            for requirement in snapshot.requirements:
-                synthetic.append(
-                    ChangeCreate(
-                        team=snapshot.team,
-                        type=ChangeType.requirement_added,
-                        description=requirement.title,
-                        details={
-                            "id": requirement.id,
-                            "title": requirement.title,
-                            "description": requirement.description,
-                            "status": requirement.status,
-                            **requirement.details,
-                        },
-                    )
-                )
+            current = await self.get_state(project_id)
+            synthetic = prune_changes_for_replace(snapshot=snapshot, current=current)
+            synthetic.extend(snapshot_to_changes(snapshot))
 
             for item in synthetic:
                 version = await self._next_version(db, project_id)
@@ -639,7 +629,10 @@ class SQLiteStateStore(StateStore):
                 f"{len(snapshot.api)} APIs",
                 f"{len(snapshot.components)} components",
                 f"{len(snapshot.requirements)} requirements",
+                f"{len(snapshot.artifacts)} artifacts",
             ]
+            if snapshot.replace:
+                summary_bits.append("replace=true")
             notes = snapshot.notes.strip() or "Initial codebase snapshot"
             digest_version = await self._next_version(db, project_id)
             digest = Change(
@@ -647,8 +640,12 @@ class SQLiteStateStore(StateStore):
                 version=digest_version,
                 team=snapshot.team,
                 type=ChangeType.changelog,
-                description=f"{snapshot.team.value} onboarded: {', '.join(summary_bits)}. {notes}",
-                details={"source": "import_snapshot", "notes": notes},
+                description=f"{snapshot.team} onboarded: {', '.join(summary_bits)}. {notes}",
+                details={
+                    "source": "import_snapshot",
+                    "notes": notes,
+                    "replace": snapshot.replace,
+                },
             )
             await self._insert_change(db, digest)
 
@@ -717,7 +714,7 @@ class SQLiteStateStore(StateStore):
                 """,
                 (
                     project_id,
-                    team.value,
+                    team,
                     sub_status.value,
                     summary,
                     onboarded_at.isoformat() if onboarded_at else None,
@@ -866,6 +863,7 @@ class SQLiteStateStore(StateStore):
             "last_sync_status": "TEXT NOT NULL DEFAULT ''",
             "last_sync_error": "TEXT NOT NULL DEFAULT ''",
             "openapi_fingerprint": "TEXT NOT NULL DEFAULT ''",
+            "teams": "TEXT NOT NULL DEFAULT '[\"frontend\",\"backend\",\"other\"]'",
         }
         for name, ddl in additions.items():
             if name not in columns:
@@ -1019,6 +1017,11 @@ class SQLiteStateStore(StateStore):
             last_sync_status=(row["last_sync_status"] if "last_sync_status" in keys else "") or "",
             last_sync_error=(row["last_sync_error"] if "last_sync_error" in keys else "") or "",
             openapi_fingerprint=(row["openapi_fingerprint"] if "openapi_fingerprint" in keys else "") or "",
+            teams=(
+                json.loads(row["teams"])
+                if "teams" in keys and row["teams"]
+                else list(DEFAULT_PROJECT_TEAMS)
+            ),
         )
 
     def _summary_from_row(self, row: aiosqlite.Row, state: ProjectState) -> ProjectSummary:
@@ -1032,6 +1035,7 @@ class SQLiteStateStore(StateStore):
             open_requirements=sum(1 for item in state.requirements if item.status == "open"),
             api_count=len(state.api),
             component_count=len(state.components),
+            artifact_count=len(state.artifacts),
             subprojects=state.subprojects,
             recent_digest=state.recent_digest,
             openapi_url=project.openapi_url,
@@ -1042,6 +1046,7 @@ class SQLiteStateStore(StateStore):
             last_sync_at=project.last_sync_at,
             last_sync_status=project.last_sync_status,
             last_sync_error=project.last_sync_error,
+            teams=list(project.teams),
         )
 
     async def _next_version(self, db: aiosqlite.Connection, project_id: str) -> int:
@@ -1062,7 +1067,7 @@ class SQLiteStateStore(StateStore):
                 change.project_id,
                 change.version,
                 change.timestamp.isoformat(),
-                change.team.value,
+                change.team,
                 change.type.value,
                 change.description,
                 json.dumps(change.details),
@@ -1131,7 +1136,7 @@ class SQLiteStateStore(StateStore):
             """,
             (
                 project_id,
-                team.value,
+                team,
                 status.value,
                 summary,
                 onboarded_at.isoformat() if onboarded_at else None,
@@ -1186,7 +1191,7 @@ def filter_changes(
             timestamp = datetime.fromisoformat(since.replace("Z", "+00:00"))
             selected = [change for change in selected if change.timestamp >= timestamp]
     if team:
-        selected = [change for change in selected if change.team.value == team]
+        selected = [change for change in selected if change.team == team]
     if change_type:
         selected = [change for change in selected if change.type.value == change_type]
     return selected

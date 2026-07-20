@@ -2,29 +2,34 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 
 from sync_mcp.models import Change, ProjectState
 
 
 class ChangeNotifier:
     def __init__(self) -> None:
-        self._subscribers: set[asyncio.Queue[str]] = set()
+        self._subscribers: set[tuple[asyncio.Queue[str], Callable[[str], bool]]] = set()
 
     async def publish(self, change: Change, state: ProjectState) -> None:
+        project_id = state.project_id or change.project_id
         payload = json.dumps(
             {
-                "project_id": state.project_id or change.project_id,
+                "project_id": project_id,
                 "change": change.model_dump(mode="json"),
                 "state": state.model_dump(mode="json"),
             }
         )
-        for queue in list(self._subscribers):
-            queue.put_nowait(payload)
+        for queue, allow in list(self._subscribers):
+            if allow(project_id):
+                queue.put_nowait(payload)
 
-    async def stream(self) -> AsyncIterator[str]:
+    async def stream(self, *, allow_project: Callable[[str], bool] | None = None) -> AsyncIterator[str]:
+        """Yield SSE frames. allow_project filters change events by project_id (admins: always True)."""
+        predicate = allow_project or (lambda _pid: True)
         queue: asyncio.Queue[str] = asyncio.Queue()
-        self._subscribers.add(queue)
+        entry = (queue, predicate)
+        self._subscribers.add(entry)
         try:
             yield "event: ready\ndata: {}\n\n"
             while True:
@@ -34,4 +39,4 @@ class ChangeNotifier:
                 except TimeoutError:
                     yield "event: ping\ndata: {}\n\n"
         finally:
-            self._subscribers.discard(queue)
+            self._subscribers.discard(entry)

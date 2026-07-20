@@ -54,6 +54,7 @@ class StateStore(ABC):
         sync_mode: str = "interval",
         git_repo_path: str = "",
         owner_user_id: str | None = None,
+        teams: list[str] | None = None,
     ) -> Project:
         raise NotImplementedError
 

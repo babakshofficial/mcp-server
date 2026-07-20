@@ -17,7 +17,7 @@ from sync_mcp.models import ProjectRole
 from sync_mcp.notifier import ChangeNotifier
 from sync_mcp.project_context import (
     ProjectHeaderContext,
-    parse_project_header,
+    parse_project_and_team_headers,
     reset_principal_context,
     reset_project_context,
     set_principal_context,
@@ -61,18 +61,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return JSONResponse({"detail": "Authentication required"}, status_code=401)
 
         project_header = request.headers.get("project") or request.headers.get("Project")
-        if not project_header:
-            return JSONResponse(
-                {
-                    "detail": (
-                        "Project header required. Use Project: <project_name>-<project_type> "
-                        "(e.g. adra-backend)."
-                    )
-                },
-                status_code=400,
-            )
+        team_header = request.headers.get("team") or request.headers.get("Team")
         try:
-            name, team = parse_project_header(project_header)
+            name, team = parse_project_and_team_headers(project_header, team_header)
         except ValueError as exc:
             return JSONResponse({"detail": str(exc)}, status_code=400)
 
@@ -88,9 +79,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if not rbac.role_at_least(role, ProjectRole.viewer):
                 return JSONResponse({"detail": "Insufficient project permission"}, status_code=403)
 
+        raw = f"{project_header or ''}" + (f" + Team:{team_header}" if team_header else "")
         p_token = set_principal_context(principal)
         proj_token = set_project_context(
-            ProjectHeaderContext(project_id=project.id, team=team, raw=project_header)
+            ProjectHeaderContext(project_id=project.id, team=team, raw=raw.strip())
         )
         try:
             return await call_next(request)

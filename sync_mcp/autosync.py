@@ -9,7 +9,7 @@ import httpx
 
 from sync_mcp.git_watch import GitWatchError, read_head_sha
 from sync_mcp.http_proxy import async_client_for
-from sync_mcp.models import ChangeCreate, ChangeType, HubSettings, Project, SubprojectStatus, SyncMode, Team
+from sync_mcp.models import ChangeCreate, ChangeType, HubSettings, Project, SubprojectStatus, SyncMode, Team, Teams
 from sync_mcp.notifier import ChangeNotifier
 from sync_mcp.openapi_diff import diff_openapi_changes, endpoints_and_fingerprint
 from sync_mcp.storage.base import StateStore
@@ -75,7 +75,7 @@ class AutoSyncService:
                 response = await client.get(project.openapi_url)
                 response.raise_for_status()
                 spec = response.json()
-            endpoints, fingerprint = endpoints_and_fingerprint(spec, team=Team.backend)
+            endpoints, fingerprint = endpoints_and_fingerprint(spec, team=Teams.backend)
             sha_kw: dict[str, str] = {}
             if commit_sha is not None:
                 sha_kw["last_git_sha"] = commit_sha
@@ -91,7 +91,7 @@ class AutoSyncService:
                 return False
 
             state = await self.store.get_state(project.id)
-            changes = diff_openapi_changes(state.api, endpoints, team=Team.backend)
+            changes = diff_openapi_changes(state.api, endpoints, team=Teams.backend)
             if not changes:
                 await self.store.update_sync_status(
                     project.id,
@@ -108,7 +108,7 @@ class AutoSyncService:
                 last_change, next_state = await self.store.publish(project.id, change)
 
             summary = ChangeCreate(
-                team=Team.backend,
+                team=Teams.backend,
                 type=ChangeType.changelog,
                 description=(
                     f"Auto-sync from OpenAPI: {len(changes)} change(s) "
@@ -125,7 +125,7 @@ class AutoSyncService:
             last_change, next_state = await self.store.publish(project.id, summary)
             await self.store.mark_subproject(
                 project.id,
-                Team.backend,
+                Teams.backend,
                 SubprojectStatus.ready,
                 summary="Auto-synced from OpenAPI",
             )

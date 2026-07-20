@@ -1,5 +1,5 @@
 from sync_mcp.openapi_import import endpoints_from_openapi
-from sync_mcp.models import Team
+from sync_mcp.models import Team, Teams
 
 
 def test_endpoints_from_openapi():
@@ -22,7 +22,7 @@ def test_endpoints_from_openapi():
             },
         },
     }
-    endpoints = endpoints_from_openapi(spec, team=Team.backend)
+    endpoints = endpoints_from_openapi(spec, team=Teams.backend)
     assert {(e.method, e.path) for e in endpoints} == {
         ("GET", "/users/{id}"),
         ("DELETE", "/users/{id}"),

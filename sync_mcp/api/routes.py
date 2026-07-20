@@ -174,6 +174,8 @@ def create_api_router(
     ):
         if not rbac.can_create_project(principal):
             raise HTTPException(status_code=403, detail="Cannot create projects")
+        from sync_mcp.models import resolve_project_teams
+
         project = await store.create_project(
             body.name,
             body.description,
@@ -182,6 +184,7 @@ def create_api_router(
             sync_mode=body.sync_mode.value,
             git_repo_path=body.git_repo_path,
             owner_user_id=principal.user_id,
+            teams=resolve_project_teams(template=body.template, teams=body.teams),
         )
         service = _autosync(request)
         if service is not None and project.openapi_url and project.auto_sync:
@@ -416,6 +419,40 @@ def create_api_router(
             state=next_state,
         )
 
+    @router.post("/projects/{project_id}/acks")
+    async def acknowledge_change(
+        project_id: str,
+        body: dict,
+        principal: AuthPrincipal = Depends(require_project_access(ProjectRole.viewer)),
+    ):
+        from sync_mcp.models import AckStatus, ChangeType, normalize_team
+
+        change_id = str(body.get("change_id") or "").strip()
+        if not change_id:
+            raise HTTPException(status_code=400, detail="change_id required")
+        try:
+            status = AckStatus(str(body.get("status") or "ack"))
+            team = normalize_team(str(body.get("team") or "frontend"))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        saved, next_state = await store.publish(
+            project_id,
+            ChangeCreate(
+                team=team,
+                type=ChangeType.change_ack,
+                description=f"{status.value} change {change_id}",
+                details={
+                    "change_id": change_id,
+                    "status": status.value,
+                    "note": str(body.get("note") or ""),
+                    "user_id": principal.user_id,
+                    "username": principal.username,
+                },
+            ),
+        )
+        await notifier.publish(saved, next_state)
+        return {"ack": saved, "state": next_state}
+
     @router.post("/projects/{project_id}/openapi")
     async def import_openapi(
         project_id: str,
@@ -423,11 +460,19 @@ def create_api_router(
         request: Request,
         _: AuthPrincipal = Depends(require_project_access(ProjectRole.editor)),
     ):
-        openapi = body.get("openapi") or body.get("spec")
+        from sync_mcp.http_proxy import async_client_for
+        from sync_mcp.models import normalize_team
+
+        openapi = body.get("openapi") or body.get("spec") or body.get("openapi_json")
         openapi_url = str(body.get("openapi_url") or "")
         if not isinstance(openapi, dict):
-            raise HTTPException(status_code=400, detail="Body must include openapi object")
-        team = Team(body.get("team") or "backend")
+            if not openapi_url:
+                raise HTTPException(status_code=400, detail="Body must include openapi object or openapi_url")
+            async with async_client_for(openapi_url, timeout=30.0) as client:
+                response = await client.get(openapi_url)
+                response.raise_for_status()
+                openapi = response.json()
+        team = normalize_team(str(body.get("team") or "backend"))
         endpoints, fingerprint = endpoints_and_fingerprint(openapi, team=team)
         notes = str(body.get("notes") or f"Imported from OpenAPI ({len(endpoints)} endpoints)")
         snapshot = SnapshotImport(team=team, api=endpoints, notes=notes)
@@ -541,6 +586,18 @@ def create_api_router(
         principal = await resolve_bearer(store_dep, settings, authorization)
         if principal is None:
             raise HTTPException(status_code=401, detail="Authentication required")
-        return StreamingResponse(notifier.stream(), media_type="text/event-stream")
+
+        allowed: set[str] | None = None
+        if not principal.is_admin:
+            summaries = await store_dep.list_projects_for_user(principal.user_id, is_admin=False)
+            allowed = {s.id for s in summaries}
+
+        def allow_project(project_id: str) -> bool:
+            return allowed is None or project_id in allowed
+
+        return StreamingResponse(
+            notifier.stream(allow_project=allow_project),
+            media_type="text/event-stream",
+        )
 
     return router

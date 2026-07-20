@@ -84,6 +84,7 @@ class JSONStateStore(StateStore):
                     open_requirements=sum(1 for req in state.requirements if req.status == "open"),
                     api_count=len(state.api),
                     component_count=len(state.components),
+                    artifact_count=len(state.artifacts),
                     subprojects=state.subprojects,
                     recent_digest=state.recent_digest,
                     openapi_url=project.openapi_url,
@@ -94,6 +95,7 @@ class JSONStateStore(StateStore):
                     last_sync_at=project.last_sync_at,
                     last_sync_status=project.last_sync_status,
                     last_sync_error=project.last_sync_error,
+                    teams=list(project.teams),
                 )
             )
         return sorted(summaries, key=lambda item: item.updated_at, reverse=True)
@@ -124,12 +126,16 @@ class JSONStateStore(StateStore):
         sync_mode: str = "interval",
         git_repo_path: str = "",
         owner_user_id: str | None = None,
+        teams: list[str] | None = None,
     ) -> Project:
+        from sync_mcp.models import DEFAULT_PROJECT_TEAMS, SubprojectRecord, SubprojectStatus
+
         async with self._lock:
             payload = await self._read()
             projects = payload.setdefault("projects", {})
             project_id = self._unique_slug(name, projects)
             now = datetime.now(UTC)
+            team_list = list(teams) if teams is not None else list(DEFAULT_PROJECT_TEAMS)
             project = Project(
                 id=project_id,
                 name=name,
@@ -140,12 +146,17 @@ class JSONStateStore(StateStore):
                 auto_sync=auto_sync,
                 sync_mode=SyncMode(sync_mode),
                 git_repo_path=git_repo_path,
+                teams=team_list,
             )
+            subprojects = [
+                SubprojectRecord(team=t, status=SubprojectStatus.pending, summary="Awaiting onboarding")
+                for t in team_list
+            ]
             projects[project_id] = {
                 "meta": project.model_dump(mode="json"),
                 "changes": [],
-                "subprojects": [],
-                "state": empty_state(name, project_id).model_dump(mode="json"),
+                "subprojects": [s.model_dump(mode="json") for s in subprojects],
+                "state": empty_state(name, project_id, subprojects=subprojects).model_dump(mode="json"),
             }
             if owner_user_id:
                 members = payload.setdefault("project_members", [])
@@ -184,6 +195,8 @@ class JSONStateStore(StateStore):
                 if update.git_repo_path != project.git_repo_path:
                     data["last_git_sha"] = ""
                 data["git_repo_path"] = update.git_repo_path
+            if update.teams is not None:
+                data["teams"] = update.teams
             data["updated_at"] = datetime.now(UTC).isoformat()
             project = Project.model_validate(data)
             item["meta"] = project.model_dump(mode="json")
@@ -530,12 +543,15 @@ class JSONStateStore(StateStore):
         project_id: str,
         snapshot: SnapshotImport,
     ) -> tuple[Change, ProjectState]:
+        from sync_mcp.snapshot_ops import prune_changes_for_replace, snapshot_to_changes
+
         async with self._lock:
             payload = await self._read()
             item = self._require_item(payload, project_id)
             project = Project.model_validate(item["meta"])
             changes = [Change.model_validate(c) for c in item.get("changes", [])]
             version = max((c.version for c in changes), default=0)
+            current = ProjectState.model_validate(item.get("state") or empty_state(project.name, project_id).model_dump(mode="json"))
 
             def add(change: ChangeCreate) -> None:
                 nonlocal version
@@ -551,59 +567,28 @@ class JSONStateStore(StateStore):
                     )
                 )
 
-            for endpoint in snapshot.api:
-                add(
-                    ChangeCreate(
-                        team=snapshot.team,
-                        type=ChangeType.api_added,
-                        description=f"{endpoint.method} {endpoint.path}",
-                        details={
-                            "method": endpoint.method,
-                            "path": endpoint.path,
-                            "description": endpoint.description,
-                            **endpoint.details,
-                        },
-                    )
-                )
-            for component in snapshot.components:
-                add(
-                    ChangeCreate(
-                        team=snapshot.team,
-                        type=ChangeType.component_spec,
-                        description=component.name,
-                        details={"name": component.name, "spec": component.spec, **component.details},
-                    )
-                )
-            for requirement in snapshot.requirements:
-                add(
-                    ChangeCreate(
-                        team=snapshot.team,
-                        type=ChangeType.requirement_added,
-                        description=requirement.title,
-                        details={
-                            "id": requirement.id,
-                            "title": requirement.title,
-                            "description": requirement.description,
-                            "status": requirement.status,
-                            **requirement.details,
-                        },
-                    )
-                )
+            for item_change in prune_changes_for_replace(snapshot=snapshot, current=current):
+                add(item_change)
+            for item_change in snapshot_to_changes(snapshot):
+                add(item_change)
 
             notes = snapshot.notes.strip() or "Initial codebase snapshot"
             summary_bits = [
                 f"{len(snapshot.api)} APIs",
                 f"{len(snapshot.components)} components",
                 f"{len(snapshot.requirements)} requirements",
+                f"{len(snapshot.artifacts)} artifacts",
             ]
+            if snapshot.replace:
+                summary_bits.append("replace=true")
             version += 1
             digest = Change(
                 project_id=project_id,
                 version=version,
                 team=snapshot.team,
                 type=ChangeType.changelog,
-                description=f"{snapshot.team.value} onboarded: {', '.join(summary_bits)}. {notes}",
-                details={"source": "import_snapshot", "notes": notes},
+                description=f"{snapshot.team} onboarded: {', '.join(summary_bits)}. {notes}",
+                details={"source": "import_snapshot", "notes": notes, "replace": snapshot.replace},
             )
             changes.append(digest)
 
@@ -622,6 +607,7 @@ class JSONStateStore(StateStore):
             item["meta"]["updated_at"] = datetime.now(UTC).isoformat()
             await self._write(payload)
             return digest, state
+
 
     async def mark_subproject(
         self,

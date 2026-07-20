@@ -7,7 +7,7 @@ import httpx
 import pytest
 
 from sync_mcp.autosync import AutoSyncService
-from sync_mcp.models import Team
+from sync_mcp.models import Team, Teams
 from sync_mcp.notifier import ChangeNotifier
 from sync_mcp.project_context import parse_project_header
 from sync_mcp.storage.sqlite_store import SQLiteStateStore
@@ -17,20 +17,22 @@ from tests.conftest import login_headers, make_app
 def test_parse_project_header_name_and_type():
     name, team = parse_project_header("adra-backend")
     assert name == "adra"
-    assert team == Team.backend
+    assert team == Teams.backend
 
     name, team = parse_project_header("my-app-frontend")
     assert name == "my-app"
-    assert team == Team.frontend
+    assert team == Teams.frontend
 
 
 def test_parse_project_header_rejects_invalid():
     with pytest.raises(ValueError):
         parse_project_header("notype")
-    with pytest.raises(ValueError):
-        parse_project_header("app-mobile")
+    name, team = parse_project_header("app-mobile")
+    assert name == "app" and team == "mobile"
     with pytest.raises(ValueError):
         parse_project_header("-backend")
+    with pytest.raises(ValueError):
+        parse_project_header("app-1bad")
 
 
 @pytest.mark.asyncio

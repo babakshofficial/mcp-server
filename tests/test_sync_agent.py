@@ -38,7 +38,8 @@ def test_agent_settings_parse_project_and_mcp(tmp_path: Path, monkeypatch: pytes
     assert settings.project_name_and_team() == ("adra", "frontend")
     assert settings.resolve_rest_base() == "http://192.168.17.29:8080"
     servers = build_mcp_servers(settings)
-    assert servers["team-sync"]["headers"]["Project"] == "adra-frontend"
+    assert servers["team-sync"]["headers"]["Project"] == "adra"
+    assert servers["team-sync"]["headers"]["Team"] == "frontend"
     assert servers["team-sync"]["headers"]["Authorization"] == "Bearer sk_test"
 
 

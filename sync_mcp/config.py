@@ -47,6 +47,10 @@ class Settings(BaseSettings):
 
     def resolve_secret(self) -> str:
         if self.secret:
+            if len(self.secret.encode("utf-8")) < 32:
+                raise ValueError(
+                    "SYNC_MCP_SECRET must be at least 32 bytes (UTF-8) for HS256 JWT signing"
+                )
             return self.secret
         # Ephemeral secret for local/dev; set SYNC_MCP_SECRET in production.
         generated = secrets.token_urlsafe(32)

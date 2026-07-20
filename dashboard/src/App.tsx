@@ -948,7 +948,8 @@ function ApiKeysPanel() {
 }
 
 function SubprojectBadges({ subprojects }: { subprojects: SubprojectRecord[] }) {
-  const teams: Array<"backend" | "frontend" | "other"> = ["backend", "frontend", "other"];
+  const fromRecords = subprojects.map((s) => s.team);
+  const teams = Array.from(new Set(["backend", "frontend", "other", ...fromRecords]));
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap gap-2">

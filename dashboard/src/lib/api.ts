@@ -1,4 +1,4 @@
-export type Team = "frontend" | "backend" | "other";
+export type Team = string;
 export type HubRole = "admin" | "member";
 export type ProjectRole = "owner" | "editor" | "viewer";
 export type SyncMode = "interval" | "on_commit";
@@ -71,6 +71,7 @@ export type ProjectSummary = {
   open_requirements: number;
   api_count: number;
   component_count: number;
+  artifact_count?: number;
   subprojects: SubprojectRecord[];
   recent_digest: string;
   openapi_url: string;
@@ -81,6 +82,7 @@ export type ProjectSummary = {
   last_sync_at: string | null;
   last_sync_status: string;
   last_sync_error: string;
+  teams?: string[];
 };
 
 export type HubSettings = {

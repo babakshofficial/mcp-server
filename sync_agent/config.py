@@ -23,7 +23,11 @@ class AgentSettings(BaseSettings):
     api_key: str = Field(default="", description="Team Sync API key (sk_...)")
     project: str = Field(
         default="",
-        description="Project header value, e.g. adra-frontend or adra-backend",
+        description="Project id/name, or legacy name-team / name/team",
+    )
+    team: str = Field(
+        default="",
+        description="Optional Team header (preferred with Project=id)",
     )
     cwd: Path = Field(default=Path("."), description="Local checkout to crawl")
     cursor_api_key: str = Field(default="", description="Cursor SDK API key")
@@ -51,15 +55,17 @@ class AgentSettings(BaseSettings):
         return url
 
     def project_name_and_team(self) -> tuple[str, str]:
+        from sync_mcp.models import normalize_team
+        from sync_mcp.project_context import parse_project_and_team_headers
+
         raw = self.project.strip()
-        if "-" not in raw:
-            raise ValueError("SYNC_AGENT_PROJECT must look like '<name>-<team>'")
-        name, team = raw.rsplit("-", 1)
-        name = name.strip()
-        team = team.strip().lower()
-        if not name or team not in {"frontend", "backend", "other"}:
-            raise ValueError("Project team must be frontend, backend, or other")
-        return name, team
+        team_env = (self.team or "").strip()
+        try:
+            if team_env:
+                return parse_project_and_team_headers(raw, team_env)
+            return parse_project_and_team_headers(raw, None)
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
 
     def validate_required(self) -> None:
         if not self.api_key.strip():

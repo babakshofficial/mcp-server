@@ -4,7 +4,19 @@ from collections import Counter
 from datetime import UTC, datetime, timedelta
 from typing import Callable, TypeVar
 
-from sync_mcp.models import ApiEndpoint, Change, ChangeType, ComponentSpec, ProjectState, Requirement, SubprojectRecord
+from sync_mcp.models import (
+    AckStatus,
+    ApiEndpoint,
+    Artifact,
+    ArtifactKind,
+    Change,
+    ChangeAcknowledgement,
+    ChangeType,
+    ComponentSpec,
+    ProjectState,
+    Requirement,
+    SubprojectRecord,
+)
 
 T = TypeVar("T")
 
@@ -79,9 +91,57 @@ def apply_change(state: ProjectState, change: Change) -> ProjectState:
         )
         state.components = _upsert(state.components, component, lambda item: item.name.lower())
 
+    elif change.type == ChangeType.component_removed:
+        name = str(data.get("name") or data.get("component") or change.description).lower()
+        state.components = [item for item in state.components if item.name.lower() != name]
+
+    elif change.type == ChangeType.artifact_upsert:
+        artifact = Artifact(
+            kind=ArtifactKind(str(data.get("kind") or ArtifactKind.other.value)),
+            key=str(data.get("key") or slugify(change.description)),
+            title=str(data.get("title") or change.description),
+            description=str(data.get("description") or ""),
+            team=change.team,
+            details=data,
+            updated_at=change.timestamp,
+        )
+        state.artifacts = _upsert(
+            state.artifacts,
+            artifact,
+            lambda item: f"{item.kind.value}:{item.key.lower()}",
+        )
+
+    elif change.type == ChangeType.artifact_removed:
+        kind = str(data.get("kind") or ArtifactKind.other.value)
+        key = str(data.get("key") or "").lower()
+        state.artifacts = [
+            item
+            for item in state.artifacts
+            if not (item.kind.value == kind and item.key.lower() == key)
+        ]
+
+    elif change.type == ChangeType.change_ack:
+        ack = ChangeAcknowledgement(
+            change_id=str(data.get("change_id") or ""),
+            team=change.team,
+            status=AckStatus(str(data.get("status") or AckStatus.ack.value)),
+            note=str(data.get("note") or ""),
+            user_id=str(data.get("user_id") or ""),
+            username=str(data.get("username") or ""),
+            updated_at=change.timestamp,
+        )
+        if ack.change_id:
+            state.acknowledgements = _upsert(
+                state.acknowledgements,
+                ack,
+                lambda item: f"{item.change_id}:{item.team}",
+            )
+
     state.api.sort(key=lambda item: (item.path, item.method))
     state.requirements.sort(key=lambda item: (item.status != "open", item.updated_at), reverse=True)
     state.components.sort(key=lambda item: item.name.lower())
+    state.artifacts.sort(key=lambda item: (item.kind.value, item.key.lower()))
+    state.acknowledgements.sort(key=lambda item: item.updated_at, reverse=True)
     return state
 
 
@@ -107,7 +167,7 @@ def build_digest(changes: list[Change]) -> str:
 
     recent = [change for change in changes if change.timestamp >= datetime.now(UTC) - timedelta(days=1)]
     scope = recent or changes[:10]
-    by_team = Counter(change.team.value for change in scope)
+    by_team = Counter(str(change.team) for change in scope)
     by_type = Counter(change.type.value for change in scope)
 
     lines = [
@@ -130,7 +190,7 @@ def format_state_markdown(state: ProjectState) -> str:
         "## Subprojects",
     ]
     if state.subprojects:
-        lines.extend(f"- {item.team.value}: {item.status.value}" for item in state.subprojects)
+        lines.extend(f"- {item.team}: {item.status.value}" for item in state.subprojects)
     else:
         lines.append("- None onboarded yet")
     lines.extend(["", "## Digest", state.recent_digest, "", "## API endpoints"])
@@ -141,6 +201,24 @@ def format_state_markdown(state: ProjectState) -> str:
     lines.append("")
     lines.append("## Components")
     lines.extend(f"- {item.name}: {item.spec}" for item in state.components)
+    lines.append("")
+    lines.append("## Artifacts")
+    if state.artifacts:
+        lines.extend(
+            f"- [{item.kind.value}] `{item.key}`: {item.title or item.description}" for item in state.artifacts
+        )
+    else:
+        lines.append("- None")
+    lines.append("")
+    lines.append("## Acknowledgements")
+    if state.acknowledgements:
+        lines.extend(
+            f"- {item.change_id[:8]}… [{item.team}] {item.status.value}"
+            + (f" — {item.note}" if item.note else "")
+            for item in state.acknowledgements[:20]
+        )
+    else:
+        lines.append("- None")
     return "\n".join(lines)
 
 

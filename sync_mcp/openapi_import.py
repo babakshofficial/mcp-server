@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from sync_mcp.models import ApiEndpoint, Team
+from sync_mcp.models import ApiEndpoint, Team, Teams
 
 
-def endpoints_from_openapi(spec: dict[str, Any], *, team: Team = Team.backend) -> list[ApiEndpoint]:
+def endpoints_from_openapi(spec: dict[str, Any], *, team: Team = Teams.backend) -> list[ApiEndpoint]:
     """Convert an OpenAPI 3.x / Swagger 2 document into Team Sync API endpoints."""
     paths = spec.get("paths") or {}
     endpoints: list[ApiEndpoint] = []

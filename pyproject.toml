@@ -35,6 +35,7 @@ agent = [
 [project.scripts]
 sync-mcp = "sync_mcp.__main__:main"
 sync-mcp-agent = "sync_agent.runner:main"
+sync-mcp-import = "sync_mcp.ci_import:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["sync_mcp", "sync_agent"]

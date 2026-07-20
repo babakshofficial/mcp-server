@@ -12,7 +12,7 @@ services:
     environment:
       SYNC_MCP_PROJECT: "my-project"
       SYNC_MCP_STORAGE: "sqlite"
-      SYNC_MCP_SECRET: "change-me-in-production"
+      SYNC_MCP_SECRET: "change-me-in-production-use-32b+"
       SYNC_MCP_ADMIN_USERNAME: "admin"
       SYNC_MCP_ADMIN_PASSWORD: "changeme"
       # Host bind-mounts are owned by a different UID than the container user.
