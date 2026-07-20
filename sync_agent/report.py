@@ -18,8 +18,7 @@ def report_agent_status(
     commit_sha: str = "",
 ) -> None:
     """Best-effort REST report so the hub dashboard can show last agent run."""
-    _, team = settings.project_name_and_team()
-    project_id = _project_id_from_header(settings.project)
+    project_id, team = settings.project_name_and_team()
     url = urljoin(settings.resolve_rest_base() + "/", f"api/projects/{project_id}/agent-status")
     try:
         with sync_client_for(url, timeout=20.0) as client:
@@ -42,12 +41,6 @@ def report_agent_status(
             logger.warning("Agent status report failed: %s %s", response.status_code, response.text[:200])
     except Exception as exc:  # noqa: BLE001
         logger.warning("Agent status report error: %s", exc)
-
-
-def _project_id_from_header(project_header: str) -> str:
-    # Header is name-team; hub slug is usually the name portion (may differ if slugified).
-    name, _ = project_header.rsplit("-", 1)
-    return name.strip().lower().replace(" ", "-")
 
 
 def build_mcp_servers(settings: AgentSettings) -> dict[str, Any]:

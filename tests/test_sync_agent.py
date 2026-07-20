@@ -139,6 +139,42 @@ def test_report_agent_status_warns_on_404(tmp_path: Path, monkeypatch: pytest.Mo
     assert any("outdated" in r.message for r in caplog.records)
 
 
+def test_report_agent_status_uses_split_project_team_headers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("SYNC_AGENT_API_KEY", "sk_test")
+    monkeypatch.setenv("SYNC_AGENT_PROJECT", "adra")
+    monkeypatch.setenv("SYNC_AGENT_TEAM", "frontend")
+    monkeypatch.setenv("CURSOR_API_KEY", "cursor_key")
+    monkeypatch.setenv("SYNC_AGENT_CWD", str(tmp_path))
+    monkeypatch.setenv("SYNC_AGENT_HUB_URL", "http://192.168.17.29:8080/mcp")
+    settings = AgentSettings()
+
+    captured: dict[str, str] = {}
+
+    class FakeResponse:
+        status_code = 200
+        text = "ok"
+
+    class FakeClient:
+        def post(self, url, **kwargs):
+            captured["url"] = url
+            captured["team"] = kwargs.get("json", {}).get("team", "")
+            return FakeResponse()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+    with patch("sync_agent.report.sync_client_for", return_value=FakeClient()):
+        from sync_agent.report import report_agent_status
+
+        report_agent_status(settings, status="ok")
+
+    assert captured["url"].endswith("/api/projects/adra/agent-status")
+    assert captured["team"] == "frontend"
+
+
 def test_on_commit_skips_unchanged_head(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("SYNC_AGENT_API_KEY", "sk_test")
     monkeypatch.setenv("SYNC_AGENT_PROJECT", "demo-frontend")
